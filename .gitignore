@@ -1,0 +1,12 @@
+/target
+
+# Local environments, secrets and private files (agent setup)
+.venv/
+node_modules/
+__pycache__/
+.claude/settings.local.json
+.env
+.env.*
+data/
+output/
+*.log
