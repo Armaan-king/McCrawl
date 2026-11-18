@@ -65,11 +65,13 @@ There is one process, one tokio multi-threaded runtime and one binary crate.
 
 | File | Responsibility | Depends on |
 |---|---|---|
-| `src/main.rs` | CLI (`crawl`, `mockweb`, `bench`); wires the pipeline; graceful shutdown | all modules |
+| `src/main.rs` | CLI only (`crawl`, `mockweb`, `bench`) | `crawler`, `mockweb` |
+| `src/lib.rs` | `pub mod` declarations, so integration tests can run real crawls | all modules |
+| `src/crawler.rs` | `CrawlConfig` + `run()`: the scheduler task that owns the frontier, the fetch tasks, the parse pool, the store wiring, graceful shutdown, `report.json` | all modules |
 | `src/urlnorm.rs` | `normalize(base, href) -> Option<Url>`: resolve relative links, lowercase scheme/host, drop fragment and default port, reject non-http(s), enforce max length 2048, and reject paths where any segment appears more than 3 times (a trap signature like `/a/b/a/b/a/b/a/`). `host_key(&Url) -> String` (hostname) | `url` |
-| `src/frontier.rs` | Two-heap frontier and per-host state (see §6). `push`, `next().await`, `complete(host, outcome)` | `urlnorm`, `dedup` (seen-set) |
+| `src/frontier.rs` | Pure two-heap frontier and per-host state (see §6): a `&mut self` struct, with time passed in as `now`. `push`, `next(now)`, `complete_page`, `complete_robots` | `urlnorm`, `dedup` (seen-set), `robots` |
 | `src/robots.rs` | Fetch, parse and cache robots.txt per host with RFC 9309 status semantics; `allowed(url)`, `crawl_delay()` | `texting_robots`, `fetch` |
-| `src/fetch.rs` | One shared `reqwest::Client`: pooling, timeouts (10 s connect / 30 s total), 2 MB body cap, gzip/brotli, `hickory-dns`, **redirects disabled** (the `Location` header becomes a new frontier URL, hop count ≤ 5), Content-Type checked before reading the body. Returns a `FetchResult` or `FetchError` | `reqwest` |
+| `src/fetch.rs` | Two `reqwest::Client`s (pages: redirects off; robots.txt: ≤ 5 redirects, per RFC 9309): pooling, timeouts (10 s connect / 30 s total), 2 MB body cap, gzip/brotli, `hickory-dns`, **redirects disabled** (the `Location` header becomes a new frontier URL, hop count ≤ 5), Content-Type checked before reading the body. Returns a `FetchResult` or `FetchError` | `reqwest` |
 | `src/parse.rs` | `parse(url, body) -> Parsed { title, text, canonical, noindex, nofollow, links: Vec<Link{url, anchor, nofollow}> }`. Single-pass **streaming** parse with `lol_html` element/text handlers (`a[href]` + anchor text, `title`, `link[rel=canonical]`, `meta[name=robots]`, visible text with `script`/`style` skipped). No DOM is built. Boilerplate removal and main-content extraction are left to SP5, which reads the raw HTML from WARC | `lol_html`, `urlnorm` |
 | `src/dedup.rs` | Seen-URL `HashSet<u64>` (xxh3 of canonical URL); exact body hash (xxh3); 64-bit SimHash over word 3-shingles; `hamming(a, b)`; near-duplicate if distance ≤ 3. `NearDupIndex` uses Manku et al.'s (Google, 2007) block trick, not a linear scan: split the fingerprint into 4 × 16-bit blocks and keep 4 hash maps from block value to fingerprints. By pigeonhole, any fingerprint within distance ≤ 3 matches one block exactly, so only those buckets are checked | `xxhash-rust` |
 | `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, files rotate at 1 GB) and `pages.jsonl`; periodic flush | `flate2`, `serde_json` |
@@ -94,10 +96,10 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 - **waiting**: min-heap by `next_allowed`. These hosts have queued URLs but must still wait.
 - **ready**: max-heap by the priority of the host's best queued URL. These hosts can be fetched now.
 
-**`next().await`:**
+**`next(now)`:**
 1. Move every waiting host whose `next_allowed ≤ now` into ready.
 2. Pop the best ready host. Take its top URL and mark the host in flight.
-3. If ready is empty, sleep until the earliest `next_allowed`, or until a `Notify` fires because a push added a new host.
+3. If ready is empty, return `WaitUntil(earliest next_allowed)`, or `Idle` (requests in flight), or `Done`. The scheduler task sleeps until that time, or until a fetch completes or new links arrive.
 
 **`complete(host, outcome, response_time)`:**
 1. Clear `in_flight`.
@@ -111,13 +113,13 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 - **5 consecutive failures:** the host is marked dead and its queue is dropped.
 - **Per-host page cap reached:** the queue is dropped.
 
-**robots.txt:** A newly seen host's first job is fetching its robots.txt. That request goes through the same politeness gate, and the host's URLs aren't served until the rules are Ready. Disallowed URLs are dropped when popped.
+**robots.txt:** A newly seen host's first job is fetching its robots.txt. That request goes through the same politeness gate, and the host's URLs aren't served until the rules are Ready. Disallowed URLs are dropped when popped. If robots.txt is unavailable (5xx or unreachable), the host's URLs stay queued but unfetched, and robots.txt is retried after 60 s and then 120 s. After 3 failed attempts the host is dropped.
 
 **SP1 priority:** `priority = −depth`, so seeds come first and the crawl is breadth-first. This is the baseline sub-project 3 will be compared against.
 
 **Why two heaps:** The waiting heap enforces *when* a host may be contacted (politeness). The ready heap picks *which* of the allowed hosts is most valuable (prioritization). Both operations are O(log hosts). It's a deterministic variant of Mercator's front/back queue design, and an SP3 score replaces `−depth` without other changes.
 
-`ponytail:` The frontier sits behind one `Mutex`. If the concurrency sweep shows contention, SP2 shards it by `hash(host)`. The frontier is also in memory: about 8 bytes per seen URL plus the queued URLs, which is fine for tens of millions; disk-backed in SP2. Politeness is per hostname, not per IP or registered domain; that comes in SP2.
+`ponytail:` The frontier is owned by a single scheduler task (an actor: no locks, no thundering herd), so one core is its ceiling. If the benchmark shows the scheduler saturating, SP2 shards it by `hash(host)`. The frontier is also in memory: about 8 bytes per seen URL plus the queued URLs, which is fine for tens of millions; disk-backed in SP2. Politeness is per hostname, not per IP or registered domain; that comes in SP2.
 
 ## 7. Libraries
 
@@ -130,9 +132,9 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 
 | Outcome | Action |
 |---|---|
-| Timeout, connection reset, 5xx | Retry ≤ 2× through the frontier (politeness applies) |
+| Timeout, connection error (including DNS and TLS, which reqwest doesn't distinguish cleanly), 5xx | Retry ≤ 2× through the frontier (politeness applies); 5 consecutive failures kill the host |
 | 429 / 503 | Per-host backoff, honor `Retry-After` |
-| 4xx (not 429), DNS not found, TLS error | Permanent, recorded, no retry |
+| 4xx (not 429) | Permanent, recorded, no retry |
 | Non-HTML Content-Type | Skip before downloading the body |
 | Body > 2 MB | Truncate, set `truncated: true`, add a `WARC-Truncated` header |
 | 5 consecutive host failures | Host dead, queue dropped |
@@ -172,12 +174,12 @@ mccrawl bench   --hosts 10000 --pages 200000 --mode polite|raw [--concurrency 64
 **User agent:** `McCrawl/0.1 (+<contact URL>)`. The author supplies the contact URL when `fetch.rs` is built.
 
 **Output files:**
-- `crawl-NNNNN.warc.gz`
+- `crawl-NNNNN.warc.gz`. Response records store the decoded body, so the stored HTTP header block drops `Content-Encoding` and `Transfer-Encoding` and sets `Content-Length` to the stored body length.
 - `pages.jsonl`, one row per fetch: `url, host, depth, parent_url, priority, fetched_at, status, error, content_type, bytes, truncated, title, text, canonical, noindex, links[{url, anchor, nofollow}], simhash (hex), body_hash (hex), near_dup` (`near_dup` is the URL of an earlier page within SimHash distance ≤ 3, or `null`)
 - `report.json`: config, wall time, pages/s, bytes, status and error histograms, politeness wait, exact and near-duplicate rates, p50/p99 fetch latency, peak RSS
 
 **Environment (WSL):**
-- `CARGO_TARGET_DIR=~/.cargo-target/mccrawl` (set in WSL `~/.profile`).
+- Build artifacts go to `~/.cargo-target/mccrawl`, set by a gitignored local `.cargo/config.toml`.
 - Crawl output goes to `~/mccrawl-data/`.
 - Both keep gigabytes of build artifacts and crawl data out of OneDrive sync and off the slow `/mnt/c` filesystem.
 

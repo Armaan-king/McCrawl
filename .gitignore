@@ -1,4 +1,5 @@
 /target
+/.cargo/
 
 # Local environments, secrets and private files (agent setup)
 .venv/
