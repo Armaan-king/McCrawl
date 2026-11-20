@@ -187,7 +187,7 @@ mccrawl bench   --hosts 10000 --pages 200000 --mode polite|raw [--concurrency 64
 
 No test frameworks: `cargo test` plus one Python check.
 
-- **Unit tests** (`#[cfg(test)]` in each file):
+- **Per-module tests** (`tests/<module>.rs`, against the public API; `src/` holds no test code):
   - urlnorm: an input → canonical table.
   - frontier: never pops a host before `next_allowed`, at most one request in flight per host, priority order among ready hosts.
   - robots: the RFC 9309 status mapping.
@@ -212,7 +212,7 @@ No test frameworks: `cargo test` plus one Python check.
 
 ## 12. Done criteria
 
-1. All unit tests and `tests/politeness.rs` pass. `warc_check.py` passes.
+1. All tests in `tests/` pass, including `politeness.rs`. `warc_check.py` passes.
 2. Benchmark numbers are measured and recorded in a README table.
 3. A real crawl of 10–50k pages from `seeds/technical.txt` (committed, curated technical sites) completes politely, and its WARC passes `warc_check.py`.
 4. `README.md` covers the architecture diagram, design rationale, benchmarks and how to run it.

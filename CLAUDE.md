@@ -21,6 +21,7 @@ All shell commands for this project run in **WSL Ubuntu**, not PowerShell or Git
 - `STATE.md` is the source of truth for project structure. Keep it accurate; a stale graph costs more than no graph.
 - When a change touches file A, check `STATE.md` for everything that depends on A before editing. Fix all affected files in the same pass.
 - Shortest working diff. No speculative abstractions, no scaffolding "for later".
+- Tests go in `tests/<module>.rs` (integration tests against the public API). No `#[cfg(test)]` code in `src/`.
 - Don't re-read files already summarised in `STATE.md` unless you're editing them.
 - If something is unclear, ask instead of assuming.
 

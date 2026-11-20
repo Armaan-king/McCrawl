@@ -48,7 +48,7 @@ The spec is approved. This plan turns it into 15 tasks, built one file at a time
   - WARC files rotate at 1 GiB. Shutdown grace period 10 s.
 - **Identity:** User-Agent is `McCrawl/0.1 (+<contact>)`. The contact is a required CLI flag for real crawls. The robots agent token is `mccrawl`.
 - **Errors:** `FetchError` is a std-only enum. Binaries and `run` return `Result<_, Box<dyn Error (+ Send + Sync)>>`. A per-URL error never panics the crawl.
-- **Comments and tests:** Known ceilings are marked with `ponytail:` comments (ceiling plus upgrade path). Every module has `#[cfg(test)] mod tests`. No test frameworks beyond `cargo test` and tokio's test macros.
+- **Comments and tests:** Known ceilings are marked with `ponytail:` comments (ceiling plus upgrade path). Tests live in `tests/<module>.rs`, one integration-test file per module, using the public API only; `src/` holds no test code. The test blocks below are written as `mod tests { use super::*; … }`: when copying one, drop the wrapper and import from `mccrawl::<module>`. "Run `cargo test X`" means `cargo test --test X`. No test frameworks beyond `cargo test` and tokio's test macros.
 - **TDD loop per task:** write signatures with `todo!()` bodies plus the tests → run (FAIL: `not yet implemented`) → implement function by function → run (PASS) → update `STATE.md` → commit.
 - **Commits:** every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Nothing is pushed.
 
@@ -1084,7 +1084,7 @@ mod tests {
   - Prints a markdown table (concurrency, pages/s, % of `politeness_ceiling` in polite mode, p50, p99, CPU s, peak RSS MB) and writes `bench.json`.
   - `main` returns `Result<(), Box<dyn Error>>`, on a `#[tokio::main]` multi-thread runtime.
 
-- [ ] **Step 1:** Implement and add `fn parse_seeds(text: &str) -> Vec<Url>` with a unit test (comments, blanks, an invalid line).
+- [ ] **Step 1:** Implement, and add `pub fn parse_seeds(text: &str) -> Vec<Url>` in `src/crawler.rs` (so `tests/` can reach it) with a test (comments, blanks, an invalid line).
 - [ ] **Step 2: Smoke test.** Run `ulimit -n 65536 && cargo run --release -- bench --hosts 2000 --pages 20000 --mode polite --concurrency 256`. It should finish and print the table.
 - [ ] **Step 3:** Update `STATE.md`. Commit: `feat(cli): crawl, mockweb and bench subcommands`.
 

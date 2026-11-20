@@ -16,7 +16,9 @@
 - `.cargo/config.toml` (gitignored, local only): `target-dir` outside the repo/OneDrive.
 - `src/lib.rs`: `pub mod` declarations (`urlnorm`). Used by: `src/main.rs` (later), `tests/`.
 - `src/main.rs`: binary entry point; still the placeholder "Hello, world!" (CLI comes in Task 12).
-- `src/urlnorm.rs`: `normalize(base, href) -> Option<Url>` (resolve, drop fragment and empty query, http(s) only, ≤ 2048 chars, no path segment repeated > 3 times) and `host_key(&Url) -> Option<&str>` (lowercase hostname, the politeness key). Depends on: `url`. Used by (planned): `frontier`, `parse`, `crawler`.
+- `src/urlnorm.rs`: `normalize(base, href) -> Option<Url>` (resolve, drop fragment and empty query, http(s) only, ≤ 2048 chars, no path segment repeated > 3 times) and `host_key(&Url) -> Option<&str>` (lowercase hostname, the politeness key). Depends on: `url`. Used by (planned): `frontier`, `parse`, `crawler`. Tested by: `tests/urlnorm.rs`.
+- `tests/`: one integration-test file per module, against the public API (no test code in `src/`). Run one with `cargo test --test <module>`.
+  - `tests/urlnorm.rs`: canonicalization table, trap/scheme rejections, host key.
 - `.gitignore`: ignores `/target`, `/.cargo/`, local envs, secrets, crawl output (`data/`, `output/`) and `*.log`.
 - `CLAUDE.md`: workflow rules for Claude Code (WSL terminal, STATE.md-first workflow).
 - `AGENTS.md`: same rules for non-Claude agents (Codex etc.); mirror rule changes into `CLAUDE.md`.
