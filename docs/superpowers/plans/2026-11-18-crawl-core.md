@@ -244,7 +244,7 @@ impl NearDupIndex {
 **Files:** Create `src/robots.rs`; add `pub mod robots;`. Run `cargo add texting_robots@0.2.2`.
 
 **Produces:**
-- `pub enum RobotsRules { AllowAll, Parsed(texting_robots::Robot), Unavailable }`
+- `pub enum RobotsRules { AllowAll, Parsed(texting_robots::Robot), Unreachable }`
 - `RobotsRules::from_response(status: u16, body: &[u8], agent: &str) -> Self`
 - `allowed(&self, url: &Url) -> bool`
 - `crawl_delay(&self) -> Option<Duration>`
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(r.crawl_delay(), Some(Duration::from_secs(2)));
         assert!(RobotsRules::from_response(404, b"", "mccrawl").allowed(&u("https://a.com/private")));
         let down = RobotsRules::from_response(503, b"", "mccrawl");
-        assert!(matches!(down, RobotsRules::Unavailable));
+        assert!(matches!(down, RobotsRules::Unreachable));
         assert!(!down.allowed(&u("https://a.com/")));
     }
     #[test]
@@ -283,9 +283,9 @@ mod tests {
 
 - [ ] **Step 2:** Run `cargo test robots`. Expect FAIL.
 - [ ] **Step 3: Implement.**
-  - **`from_response`:** 2xx → `Robot::new(agent, body)`, falling back to `AllowAll` on a parse error. 4xx → `AllowAll`. Anything else → `Unavailable`.
-  - **`allowed`:** `Parsed(r)` → `r.allowed(url.as_str())`; `AllowAll` → true; `Unavailable` → false.
-  - **`crawl_delay`:** `r.delay.map(Duration::from_secs_f32)`.
+  - **`from_response`:** 2xx → `Robot::new(agent, body)`, falling back to `AllowAll` on a parse error. 4xx except 429 → `AllowAll`. 429, 5xx and anything else → `Unreachable`.
+  - **`allowed`:** `Parsed(r)` → `r.allowed(url.as_str())`; `AllowAll` → true; `Unreachable` → false.
+  - **`crawl_delay`:** `Duration::try_from_secs_f32` (texting_robots accepts `inf`/`1e30`, which would make `from_secs_f32` panic), capped at `MAX_CRAWL_DELAY` = 24 h. Covered by the test `hostile_crawl_delay_never_panics_and_is_capped`.
   - **`robots_url`:** clone, `set_path("/robots.txt")`, `set_query(None)`, `set_fragment(None)`.
 - [ ] **Step 4:** Run `cargo test robots`. Expect PASS.
 - [ ] **Step 5:** Update `STATE.md`. Commit: `feat(robots): RFC 9309 rules and robots URL`.
@@ -490,7 +490,7 @@ pub fn complete_page(&mut self, id: HostId, outcome: Outcome, now: Instant) {
 
   - `complete_robots`:
     - Decrement `in_flight` and clear the host's `in_flight`.
-    - **`Unavailable`:** `robots_attempts += 1`, robots back to `Unknown`. If `attempts ≥ max_robots_attempts`, mark the host dead and drop its queue. Otherwise set `next_allowed = now + robots_retry × 2^(attempts−1)`.
+    - **`Unreachable`:** `robots_attempts += 1`, robots back to `Unknown`. If `attempts ≥ max_robots_attempts`, mark the host dead and drop its queue. Otherwise set `next_allowed = now + robots_retry × 2^(attempts−1)`.
     - **Anything else:** reset attempts, set `Ready(rules, now)`, set `next_allowed = now + max(crawl_delay, min_delay, k × elapsed)`.
     - Then `schedule(id)`.
   - Add `// ponytail:` comments:
@@ -565,12 +565,12 @@ fn robots_unavailable_retries_with_backoff_then_gives_up() {
     let mut t = t0;
     for wait in [60, 120] {
         let Job::Robots { host, .. } = job(&mut f, t) else { panic!("expected robots") };
-        f.complete_robots(host, RobotsRules::Unavailable, ms(0), t);
+        f.complete_robots(host, RobotsRules::Unreachable, ms(0), t);
         assert!(matches!(f.next(t), Next::WaitUntil(x) if x == t + s(wait)));
         t += s(wait);
     }
     let Job::Robots { host, .. } = job(&mut f, t) else { panic!() };
-    f.complete_robots(host, RobotsRules::Unavailable, ms(0), t);
+    f.complete_robots(host, RobotsRules::Unreachable, ms(0), t);
     assert!(matches!(f.next(t), Next::Done)); // no Page job was ever issued
 }
 ```
@@ -980,7 +980,7 @@ pub async fn run(cfg: CrawlConfig, shutdown: impl Future<Output = ()>) -> Result
      - `links_tx.blocking_send(children)`, ignoring send errors.
    - Keep the blocking handles in a `JoinSet` and await them all before exiting.
 3. **Fetch task** (`JoinSet<Done>`):
-   - **`Job::Robots`:** `fetch_robots` → `RobotsRules::from_response` (an `Err` becomes `Unavailable`). Return `Done::Robots { host, rules, elapsed }`.
+   - **`Job::Robots`:** `fetch_robots` → `RobotsRules::from_response` (an `Err` becomes `Unreachable`). Return `Done::Robots { host, rules, elapsed }`.
    - **`Job::Page`:** `fetch_page`.
      - 200 and HTML → `parse_tx.send(ParseJob).await`. A full channel is the backpressure: the fetch task keeps holding its slot until it gets in.
      - Any other response or an error → `store_tx.send(StoreMsg)` with the status or error and no WARC.

@@ -8,7 +8,7 @@ What it is built to do well:
 - **No repeats:** skip URLs it has already seen, and spot pages that are copies or near-copies of each other.
 - **Standard output:** save pages as WARC files, the format web archives use.
 
-> **Status:** part 1 (the core crawler) is being built, and 2 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
+> **Status:** part 1 (the core crawler) is being built, and 3 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
 
 ## How it works
 
@@ -119,7 +119,7 @@ Each box is one step, and its tests are written before its code. An arrow from A
 flowchart TD
     urlnorm["1 · URL cleanup<br/>one spelling per page"]:::done
     dedup["2 · Repeat detection<br/>seen URLs, page fingerprints"]:::done
-    robots["3 · robots.txt rules"]
+    robots["3 · robots.txt rules"]:::done
     frontier["4–5 · To-do list<br/>+ politeness timing"]
     parse["6 · Page reader<br/>links, title, text"]
     mockweb["7 · Fake web for testing"]
