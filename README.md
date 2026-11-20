@@ -1,123 +1,136 @@
 # McCrawl
 
-A high-performance web crawler: an async Rust crawl engine, with Python ML for crawl prioritization and search on top.
+McCrawl is a **web crawler**: a program that starts from a few web pages, follows their links, and downloads pages from across the web. The crawler is written in Rust, for speed. Later parts add Python machine learning (ML), first to choose which pages are worth downloading first, then to search what was downloaded.
 
-It focuses on the hard parts of crawling at scale:
-- **Throughput:** thousands of hosts in flight on one machine.
-- **Politeness:** per-host rate limits that adapt to how each server responds, and RFC 9309 robots.txt.
-- **Dedup:** canonical URLs plus SimHash near-duplicate detection.
-- **Archival output:** standard WARC files.
+What it is built to do well:
+- **Fast:** download from thousands of websites at the same time, on one laptop.
+- **Polite:** never overload a website. It waits between requests to the same site, slows down when a site is slow or says "too many requests", and follows each site's `robots.txt` rules.
+- **No repeats:** skip URLs it has already seen, and spot pages that are copies or near-copies of each other.
+- **Standard output:** save pages as WARC files, the format web archives use.
 
-> **Status:** sub-project 1 (crawl core) is in progress, 2 of 15 tasks done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md) and the task-by-task plan in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
+> **Status:** part 1 (the core crawler) is being built, and 2 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
 
-## What the crawler does
+## How it works
 
-### Pipeline
-
-A single scheduler task owns the frontier, so the frontier needs no locks. The scheduler hands jobs to async fetch tasks. HTML goes to a CPU-bound parse pool; every record goes to a single store writer. Links found during parsing flow back into the frontier.
+### The big picture
 
 ```mermaid
 flowchart LR
-    seeds(["seed URLs"]) --> F
+    seeds(["Starting URLs"]) --> F
 
-    subgraph SCHED["Scheduler task: owns the frontier, no locks"]
-        F["Frontier<br/>per-host queues<br/>waiting heap · ready heap"]
+    subgraph SCHED["Scheduler: the only part that touches the to-do list"]
+        F["To-do list<br/>URLs waiting,<br/>grouped by website"]
     end
 
-    F -- "next(now): robots.txt or page job" --> FT["Fetch tasks ×N<br/>async reqwest, 2 MiB cap"]
-    FT -- "outcome + latency, redirect target" --> F
-    FT -- "HTML, bounded channel = backpressure" --> P["Parse pool<br/>lol_html streaming, ≤ 1 per core"]
-    FT -- "errors, non-HTML: record only" --> ST
-    P -- "links → normalize → seen-set" --> F
-    P -- "page record + SimHash" --> ST["Store thread<br/>single writer"]
-    ST --> OUT[("crawl-NNNNN.warc.gz<br/>pages.jsonl · report.json")]
+    F -- "next URL that is allowed now" --> FT["Downloaders<br/>many at once"]
+    FT -- "how it went, how long it took" --> F
+    FT -- "HTML pages" --> P["Readers<br/>pull out links and text,<br/>one per CPU core"]
+    FT -- "errors, non-HTML: just log them" --> ST
+    P -- "new links, cleaned up,<br/>skipped if seen before" --> F
+    P -- "title, text, links, fingerprint" --> ST["Saver<br/>writes everything to disk"]
+    ST --> OUT[("Web archive .warc.gz<br/>pages.jsonl · report.json")]
 ```
 
-### Politeness: the life of a host in the frontier
+In words:
+1. The scheduler picks the next URL that is allowed to be downloaded right now.
+2. A downloader fetches it. Many downloads run at the same time.
+3. HTML pages go to a reader, which pulls out the links, title and text.
+4. New links go back onto the to-do list, and everything gets saved to disk.
+5. This repeats until the page budget is used up or there is nothing left to do.
 
-Every host is in exactly one place at a time:
-- the **waiting heap** (sorted by when it may next be contacted);
-- the **ready heap** (sorted by the priority of its best queued URL);
-- **in flight** (at most one request per host).
+If the readers fall behind, the downloaders wait, so memory never fills up with unread pages.
 
-The waiting heap decides *when* a host may be contacted, and the ready heap decides *which* allowed host is worth the most. This is a deterministic variant of Mercator's front/back queues.
+### Being polite to websites
+
+The rules for each website:
+- **One at a time:** at most one download at a time from any website.
+- **Wait between downloads.** The wait is the longest of these three:
+  - 1 second;
+  - 5 × how long the site took to answer (a slow answer usually means a busy server);
+  - the delay the site asks for in its `robots.txt`.
+- **Back off when told to:**
+  - "Too many requests" (HTTP 429) or "busy" (503) doubles the wait, up to 10 minutes.
+  - Each successful download halves it again.
+  - If the site says exactly how long to wait (`Retry-After`), wait that long.
+- **Read `robots.txt` first,** and never download pages it forbids.
+  - If `robots.txt` fails to load because the site is erroring, download nothing from that site.
+  - Try `robots.txt` again after 1 minute, then after 2.
+  - After 3 failures, give up on the site.
+- **Know when to stop:** give up on a site after 5 failures in a row, and stop at a page limit per site.
+
+Behind the scenes, every website is always in exactly one of these states:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Waiting: first URL seen, next_allowed = now
-    Waiting --> Ready: now ≥ next_allowed
-    Ready --> InFlight: popped, best priority first
-    InFlight --> Waiting: done, next_allowed = now + delay
-    InFlight --> Idle: done, queue empty
-    Idle --> Waiting: new URL pushed
-    InFlight --> Dead: 5 failures in a row, or robots.txt down 3 times
-    Dead --> [*]
+    [*] --> Waiting: first URL from a new site
+    Waiting --> Ready: wait is over
+    Ready --> Downloading: its turn, most important site first
+    Downloading --> Waiting: done, start the next wait
+    Downloading --> NothingToDo: done, no URLs left for this site
+    NothingToDo --> Waiting: a new URL for this site shows up
+    Downloading --> GivenUp: 5 failures in a row, or robots.txt failed 3 times
+    GivenUp --> [*]
 
     note right of Ready
-        A host's first job is always its robots.txt,
-        refetched after 24 h. Disallowed URLs are
-        dropped, and so is the queue past the per-host cap.
+        A site's first download is always
+        its robots.txt, read again every 24 h.
     end note
 ```
 
-The delay after each response adapts to the server:
+Internally there are two lines:
+- **Waiting line:** sites sorted by "when is this site allowed again?".
+- **Ready line:** sites sorted by "how important is this site's best URL?".
 
-```
-delay = max(robots Crawl-delay, min_delay = 1 s, 5 × response_time) × backoff
+The first line keeps the crawler polite and the second keeps it useful. Both stay fast with millions of sites: picking the next one takes a few dozen steps, not one step per site.
 
-429 / 503    → backoff × 2 (capped at 10 min), Retry-After always honored
-success      → backoff ÷ 2 (down to 1)
-robots.txt   → 2xx: obey · 4xx: allow all · 5xx/unreachable: fetch nothing, retry in 60 s, then 120 s
-```
+### Avoiding repeats and traps
 
-### Dedup and trap defenses
-
-| Layer | How |
+| Problem | What McCrawl does |
 |---|---|
-| Same URL spelled differently | WHATWG parse, lowercase host, drop default port, fragment and empty query (`urlnorm`) |
-| Crawler traps | URL > 2048 chars, or any path segment repeated > 3 times (`/a/b/a/b/a/b/a/`); ≤ 5 redirect hops; per-host page cap |
-| Same URL twice | 64-bit xxh3 seen-set |
-| Identical body | xxh3 body hash |
-| Near-identical body | 64-bit SimHash over word 3-shingles; Hamming distance ≤ 3, found via a 4 × 16-bit block index (Manku et al., 2007), not a linear scan |
+| One page, many spellings (`HTTPS://Example.com:443/x#top` and `https://example.com/x`) | Rewrites every URL into one standard form |
+| Endless URLs (links that loop forever, like `/a/b/a/b/a/b/...`) | Skips URLs over 2048 characters or with a path part repeated more than 3 times, follows at most 5 redirects, and limits pages per site |
+| The same URL found again | Remembers a short hash (an 8-byte code) of every URL seen |
+| An exact copy of a page | Compares a hash of the page content |
+| A near copy (same article, different ads) | Gives each page a text fingerprint (SimHash) so similar pages get similar fingerprints, then finds close matches with a lookup table instead of checking every page |
 
 ## The plan
 
-### Roadmap
+### Five parts
 
-Each sub-project gets its own spec → plan → build cycle.
+Each part gets its own design, plan and build.
 
 ```mermaid
 flowchart LR
-    SP1["1 · Crawl core<br/>Rust<br/>efficiency, politeness"]:::wip
-    SP2["2 · Distribution<br/>host-hash sharding,<br/>disk frontier, checkpoints"]
-    SP3["3 · Focused-crawl ML<br/>score URLs before fetch;<br/>harvest rate vs BFS"]
-    SP4["4 · Dynamic content<br/>JS-need detection,<br/>headless Chrome"]
-    SP5["5 · Knowledge layer<br/>quality, embeddings,<br/>search"]
+    SP1["1 · Core crawler<br/>fast and polite<br/>(in progress)"]:::wip
+    SP2["2 · Scale out<br/>split the crawl across<br/>many machines"]
+    SP3["3 · Smart crawling (ML)<br/>guess which links lead<br/>to good pages"]
+    SP4["4 · JavaScript sites<br/>render pages that need<br/>a real browser"]
+    SP5["5 · Search<br/>rate page quality, search<br/>the crawl by meaning"]
     SP1 --> SP2 --> SP3 --> SP4 --> SP5
 
     classDef wip fill:#fff3cd,stroke:#d39e00,color:#000
 ```
 
-### Sub-project 1 build order
+### Part 1, step by step
 
-Each box is one task, built test-first. An arrow `A → B` means B uses A. Green means done.
+Each box is one step, and its tests are written before its code. An arrow from A to B means B is built on A. Green means done.
 
 ```mermaid
 flowchart TD
-    urlnorm["1 · urlnorm<br/>canonical URLs, trap guards"]:::done
-    dedup["2 · dedup<br/>seen-set, SimHash, block index"]:::done
-    robots["3 · robots<br/>RFC 9309 rules"]
-    frontier["4–5 · frontier<br/>two heaps, politeness timing"]
-    parse["6 · parse<br/>streaming links, text, meta"]
-    mockweb["7 · mockweb<br/>deterministic synthetic web"]
-    fetch["8 · fetch<br/>reqwest, body cap, error classes"]
-    store["9 · store<br/>WARC + JSONL, near-dup marking"]
-    metrics["10 · metrics<br/>tally, percentiles, report"]
-    crawler["11 · crawler<br/>scheduler actor + pipeline"]
-    cli["12 · CLI<br/>crawl · mockweb · bench"]
-    proof["13 · politeness proof<br/>+ warcio validation"]
-    bench["14 · benchmarks<br/>+ samply profiling"]
-    real["15 · real crawl<br/>technical seed list"]
+    urlnorm["1 · URL cleanup<br/>one spelling per page"]:::done
+    dedup["2 · Repeat detection<br/>seen URLs, page fingerprints"]:::done
+    robots["3 · robots.txt rules"]
+    frontier["4–5 · To-do list<br/>+ politeness timing"]
+    parse["6 · Page reader<br/>links, title, text"]
+    mockweb["7 · Fake web for testing"]
+    fetch["8 · Downloader"]
+    store["9 · Saving to disk"]
+    metrics["10 · Stats and report"]
+    crawler["11 · Crawler<br/>connects everything"]
+    cli["12 · Command line"]
+    proof["13 · Test that proves<br/>it is polite"]
+    bench["14 · Speed tests<br/>+ finding slow spots"]
+    real["15 · Real crawl of<br/>technical websites"]
 
     urlnorm --> frontier
     dedup --> frontier
@@ -136,19 +149,19 @@ flowchart TD
     classDef done fill:#d4edda,stroke:#28a745,color:#000
 ```
 
-## Layout
+## Folders
 
 ```
-src/        the crate: one module per box above (lib.rs declares them, main.rs is the CLI)
-tests/      one test file per module, against the public API
-docs/       design spec and implementation plan
+src/        the crawler's code, one file per box above
+tests/      the tests, one file per code file
+docs/       the full design and the step-by-step plan
 ```
 
-## Running
+## Running the tests
 
 ```sh
-cargo test                 # everything
-cargo test --test dedup    # one module
+cargo test                 # run every test
+cargo test --test dedup    # run one file's tests
 ```
 
-The `crawl`, `mockweb` and `bench` commands arrive with Task 12.
+Commands to actually crawl (`crawl`, `mockweb`, `bench`) come in step 12.
