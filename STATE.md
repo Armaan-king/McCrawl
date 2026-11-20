@@ -21,6 +21,7 @@
 - `tests/`: one integration-test file per module, against the public API (no test code in `src/`). Run one with `cargo test --test <module>`.
   - `tests/urlnorm.rs`: canonicalization table, trap/scheme rejections, host key.
   - `tests/dedup.rs`: seen-set dedup, SimHash near/far on a 2000-word fixture, block index hit/reject.
+- `README.md`: project overview with Mermaid diagrams: crawl pipeline, per-host frontier state machine, politeness formula, dedup layers, roadmap, sub-project 1 build order. **After each task:** bump the status line and mark the task's box `:::done`. Mirrors: spec §2 and §4–§6, plan task list.
 - `.gitignore`: ignores `/target`, `/.cargo/`, local envs, secrets, crawl output (`data/`, `output/`) and `*.log`.
 - `CLAUDE.md`: workflow rules for Claude Code (WSL terminal, STATE.md-first workflow).
 - `AGENTS.md`: same rules for non-Claude agents (Codex etc.); mirror rule changes into `CLAUDE.md`.

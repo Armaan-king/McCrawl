@@ -49,7 +49,7 @@ The spec is approved. This plan turns it into 15 tasks, built one file at a time
 - **Identity:** User-Agent is `McCrawl/0.1 (+<contact>)`. The contact is a required CLI flag for real crawls. The robots agent token is `mccrawl`.
 - **Errors:** `FetchError` is a std-only enum. Binaries and `run` return `Result<_, Box<dyn Error (+ Send + Sync)>>`. A per-URL error never panics the crawl.
 - **Comments and tests:** Known ceilings are marked with `ponytail:` comments (ceiling plus upgrade path). Tests live in `tests/<module>.rs`, one integration-test file per module, using the public API only; `src/` holds no test code. The test blocks below are written as `mod tests { use super::*; … }`: when copying one, drop the wrapper and import from `mccrawl::<module>`. "Run `cargo test X`" means `cargo test --test X`. No test frameworks beyond `cargo test` and tokio's test macros.
-- **TDD loop per task:** write signatures with `todo!()` bodies plus the tests → run (FAIL: `not yet implemented`) → implement function by function → run (PASS) → update `STATE.md` → commit.
+- **TDD loop per task:** write signatures with `todo!()` bodies plus the tests → run (FAIL: `not yet implemented`) → implement function by function → run (PASS) → update `STATE.md` and the README (status line + mark the task's box `:::done` in the build-order diagram) → commit.
 - **Commits:** every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Nothing is pushed.
 
 ## File map
@@ -71,7 +71,7 @@ The spec is approved. This plan turns it into 15 tasks, built one file at a time
 | `tests/politeness.rs` | Proof of zero politeness violations | 13 |
 | `tests/warc_check.py` | Independent WARC validation (warcio) | 13 |
 | `seeds/technical.txt` | Curated technical seed list | 15 |
-| `README.md` | Architecture, rationale, benchmarks, usage | 15 |
+| `README.md` | Diagrams (pipeline, host state machine, roadmap, build order), rationale, benchmarks, usage | created early; progress per task; finished in 15 |
 
 ---
 
@@ -1183,7 +1183,7 @@ if __name__ == "__main__":
 
 ### Task 15: Real crawl, README, wrap-up
 
-**Files:** Create `seeds/technical.txt`, `README.md`. Modify `STATE.md`.
+**Files:** Create `seeds/technical.txt`. Modify `README.md` (add benchmarks, profiling, real-crawl stats; keep the existing diagrams), `STATE.md`.
 
 - [ ] **Step 1: Seed list.** Draft `seeds/technical.txt` with about 150 curated technical sources: language and framework docs, engineering blogs, systems and database write-ups, and individual expert blogs. Comments group the sections. The user reviews and edits the list before any crawl.
 - [ ] **Step 2: Real crawl.**
