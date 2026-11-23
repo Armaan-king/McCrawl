@@ -658,6 +658,22 @@ mod tests {
   - `fn decode_entities(s: &str) -> Cow<'_, str>` handles `amp lt gt quot apos nbsp` and `&#N;`/`&#xH;`. Unknown entities are left untouched.
   - If the test shows `get_attribute` already decodes `&amp;`, drop the decode on hrefs.
   - `// ponytail: no charset sniffing (lol_html defaults to UTF-8); SP5 re-parses raw HTML from WARC.`
+
+  **As built** (the tests live in `tests/parse.rs`, so `decode_entities` is `pub`):
+  - **lol_html settings:**
+    - `with_strict(false)`. Strict mode (the default) stops reading at any script/style/title/textarea/iframe/xmp/noscript tag inside `<select>` or after `<frameset>`, and `<select><script>` is valid HTML.
+    - `with_adjust_charset_on_meta_tag(!bom)`. A leading UTF-8 BOM is stripped and outranks `<meta charset>`, as the HTML spec says.
+  - **Per-element rules:**
+    - `get_attribute` returns raw values, so hrefs are decoded.
+    - Only the first `<base href>` counts, even when it's unusable.
+    - The title takes only RCData chunks, which skips SVG `<title>` tooltips, and only from the first title.
+    - Anchors also take `alt` text from `a[href] img[alt]` and skip non-Data text (script inside `<a>`).
+  - **`decode_entities`:**
+    - Every numeric reference, following HTML's rules: NUL, surrogates and out-of-range values → U+FFFD, and 0x80–0x9F → Windows-1252.
+    - 144 named references: the Latin-1 table plus HTML 4's special characters, cross-checked against the HTML5 table. `;` is required.
+    - The name scan stops before the next `&`, so the decode is linear time.
+  - **Known limits (`ponytail:`):** links before `<base>`, links inside `<noscript>` (raw text to lol_html), and no HTTP-header charset.
+  - **Checks:** 17 tests in `tests/parse.rs` (the plan's 3 plus edge cases) and 34 mutations, all caught.
 - [ ] **Step 4:** Run `cargo test parse`. Expect PASS.
 - [ ] **Step 5:** Update `STATE.md`. Commit: `feat(parse): streaming link/text extraction with lol_html`.
 
