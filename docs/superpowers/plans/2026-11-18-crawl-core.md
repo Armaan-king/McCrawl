@@ -576,6 +576,10 @@ fn robots_unavailable_retries_with_backoff_then_gives_up() {
 ```
 
 - [ ] **Step 2:** Run `cargo test frontier`. Fix whatever fails. These tests target the Task 4 logic, so expect small fixes only.
+- **Review of Tasks 1–3 (done after Task 5):** edge-case tests and mutation checks. Fixes:
+  - `urlnorm` also strips credentials and trailing host dots, and applies RFC 3986 percent normalization (idempotent).
+  - `robots` retries a file texting_robots rejects (an oversized `$` rule) with the `$` anchors stripped, instead of allowing everything.
+  - `dedup` gets golden values, which a Task 14 optimization must keep.
 - **Built beyond the plan:**
   - 11 edge-case tests: a URL pushed mid-download, priority and FIFO within a host, one slow host not blocking others, requeue, failure-count reset, dead-host pushes, robots recovery, robots refetch at 24 h, the Retry-After cap, hostless URLs, child entries.
   - The randomized model check `random_operations_never_break_politeness_or_lose_urls` (25 seeds × 5,000 operations; URL conservation checked).
