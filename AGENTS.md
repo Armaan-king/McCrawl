@@ -24,6 +24,7 @@ All shell commands for this project run in **WSL Ubuntu**, not PowerShell or Git
 - When a change touches file A, check `STATE.md` for everything that depends on A before editing. Fix all affected files in the same pass.
 - Shortest working diff. No speculative abstractions, no scaffolding "for later".
 - Tests go in `tests/<module>.rs` (integration tests against the public API). No `#[cfg(test)]` code in `src/`.
+- Cover edge cases, not just the happy path: hostile input, limits, overflow, failure and recovery paths. For every bug fix and core rule, break the code on purpose, confirm a test fails, then restore it (a mutation check).
 - Don't re-read files already summarised in `STATE.md` unless you're editing them.
 - If something is unclear, ask instead of assuming.
 - `CLAUDE.md` holds the same rules for Claude Code. If you change a rule here, mirror it there.

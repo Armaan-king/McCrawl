@@ -4,7 +4,7 @@
 
 ## Status
 
-- **2026-11-18:** McCrawl is a high-performance web crawler: Rust crawl engine now, Python ML later. Sub-project 1 (crawl core) is being built on branch `feat/crawl-core`, following `docs/superpowers/plans/2026-11-18-crawl-core.md` (15 tasks). **Done:** Task 1 `urlnorm.rs`, Task 2 `dedup.rs`, Task 3 `robots.rs`, Task 4 `frontier.rs` core (18 tests pass, clippy and fmt clean). **Next: Task 5, frontier tests for robots, caps and dead hosts.**
+- **2026-11-18:** McCrawl is a high-performance web crawler: Rust crawl engine now, Python ML later. Sub-project 1 (crawl core) is being built on branch `feat/crawl-core`, following `docs/superpowers/plans/2026-11-18-crawl-core.md` (15 tasks). **Done:** Task 1 `urlnorm.rs`, Task 2 `dedup.rs`, Task 3 `robots.rs`, Tasks 4–5 `frontier.rs` (35 tests pass, clippy and fmt clean; 12/12 frontier mutations caught). **Next: Task 6, `parse.rs`.**
 - **Toolchain (WSL):** Rust 1.97.1 from Nix (home-manager; dotfiles are read-only Nix symlinks). Python 3.14, uv.
   - Stale rustup proxies in `~/.cargo/bin` shadow `cargo clippy` / `cargo fmt`. Run `cargo-clippy clippy --all-targets -- -D warnings` and `cargo-fmt` directly instead.
   - Build artifacts go to `~/.cargo-target/mccrawl`, set by the gitignored `.cargo/config.toml`.
@@ -24,7 +24,7 @@
   - `tests/urlnorm.rs`: canonicalization table, trap/scheme rejections, host key.
   - `tests/dedup.rs`: seen-set dedup, SimHash near/far on a 2000-word fixture, block index hit/reject.
   - `tests/robots.rs`: status semantics (200/404/500/503/429), agent-specific group, hostile Crawl-delay, robots URL.
-  - `tests/frontier.rs`: robots first, one in flight per host, priority order, dedup vs requeue, adaptive delay, backoff and Retry-After, a site Crawl-delay above the backoff cap, empty → Done. Deterministic: fixed `t0` plus offsets, no sleeps.
+  - `tests/frontier.rs`: robots first, one in flight per host, priority order, dedup vs requeue, adaptive delay, backoff and Retry-After, a site Crawl-delay above the backoff cap, empty → Done; robots crawl-delay/disallow, page cap, dead hosts, robots unreachable → retry → give up. Edge cases: a push mid-download, priority and FIFO within a host, host independence, requeue, failure reset, dead-host pushes, robots recovery, 24 h refetch, the Retry-After cap, hostless URLs, `child`. Plus `random_operations_never_break_politeness_or_lose_urls`: a model-based random simulation (25 seeds) checking one request per host, no early contact, robots first, no disallowed URL, the cap, no dead-host jobs, and URL conservation; it also asserts that every drop path was exercised. Deterministic: fixed `t0` plus offsets, no sleeps.
 - `README.md`: project overview with Mermaid diagrams: crawl pipeline, per-host frontier state machine, politeness formula, dedup layers, roadmap, sub-project 1 build order. **After each task:** bump the status line and mark the task's box `:::done`. Mirrors: spec §2 and §4–§6, plan task list.
 - `.gitignore`: ignores `/target`, `/.cargo/`, local envs, secrets, crawl output (`data/`, `output/`) and `*.log`.
 - `CLAUDE.md`: workflow rules for Claude Code (WSL terminal, STATE.md-first workflow).

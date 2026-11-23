@@ -48,7 +48,7 @@ The spec is approved. This plan turns it into 15 tasks, built one file at a time
   - WARC files rotate at 1 GiB. Shutdown grace period 10 s.
 - **Identity:** User-Agent is `McCrawl/0.1 (+<contact>)`. The contact is a required CLI flag for real crawls. The robots agent token is `mccrawl`.
 - **Errors:** `FetchError` is a std-only enum. Binaries and `run` return `Result<_, Box<dyn Error (+ Send + Sync)>>`. A per-URL error never panics the crawl.
-- **Comments and tests:** Known ceilings are marked with `ponytail:` comments (ceiling plus upgrade path). Tests live in `tests/<module>.rs`, one integration-test file per module, using the public API only; `src/` holds no test code. The test blocks below are written as `mod tests { use super::*; … }`: when copying one, drop the wrapper and import from `mccrawl::<module>`. "Run `cargo test X`" means `cargo test --test X`. No test frameworks beyond `cargo test` and tokio's test macros.
+- **Comments and tests:** Known ceilings are marked with `ponytail:` comments (ceiling plus upgrade path). Tests live in `tests/<module>.rs`, one integration-test file per module, using the public API only; `src/` holds no test code. The test blocks below are written as `mod tests { use super::*; … }`: when copying one, drop the wrapper and import from `mccrawl::<module>`. "Run `cargo test X`" means `cargo test --test X`. The listed tests are the minimum: each task adds edge-case tests (hostile input, limits, overflow, failure and recovery), and core rules get a mutation check (break the code, confirm a test fails, restore). No test frameworks beyond `cargo test` and tokio's test macros.
 - **TDD loop per task:** write signatures with `todo!()` bodies plus the tests → run (FAIL: `not yet implemented`) → implement function by function → run (PASS) → update `STATE.md` and the README (status line + mark the task's box `:::done` in the build-order diagram) → commit.
 - **Commits:** every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Nothing is pushed.
 
@@ -576,6 +576,10 @@ fn robots_unavailable_retries_with_backoff_then_gives_up() {
 ```
 
 - [ ] **Step 2:** Run `cargo test frontier`. Fix whatever fails. These tests target the Task 4 logic, so expect small fixes only.
+- **Built beyond the plan:**
+  - 11 edge-case tests: a URL pushed mid-download, priority and FIFO within a host, one slow host not blocking others, requeue, failure-count reset, dead-host pushes, robots recovery, robots refetch at 24 h, the Retry-After cap, hostless URLs, child entries.
+  - The randomized model check `random_operations_never_break_politeness_or_lose_urls` (25 seeds × 5,000 operations; URL conservation checked).
+  - 12 mutations, all caught.
 - [ ] **Step 3:** Run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 - [ ] **Step 4:** Commit: `test(frontier): robots, caps and dead-host behaviour`.
 
