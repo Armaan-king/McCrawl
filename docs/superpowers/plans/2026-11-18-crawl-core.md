@@ -445,7 +445,7 @@ mod tests {
 
   **Internals:**
   - `Queued { priority, seq, entry }` is ordered by `(priority, Reverse(seq))`: highest priority first, FIFO among equals.
-  - `Host { name, robots_url, queue: BinaryHeap<Queued>, robots: RobotsState, robots_attempts, next_allowed, backoff: u32, in_flight, scheduled, failures, fetched, dead }`, where `enum RobotsState { Unknown, Fetching, Ready(RobotsRules, Instant) }`.
+  - `Host { name, robots_url, queue: BinaryHeap<Queued>, robots: Option<(RobotsRules, Instant)>, robots_attempts, next_allowed, backoff: u32, in_flight, scheduled, failures, fetched, dead }` (`None` = not fetched yet, or unreachable). The in-flight flag already covers "fetching".
   - `Frontier { cfg, hosts: Vec<Host>, ids: HashMap<String, HostId>, waiting: BinaryHeap<Reverse<(Instant, HostId)>>, ready: BinaryHeap<(i32, Reverse<u64>, HostId)>, seen: SeenSet, seq: u64, in_flight: usize, stats }`
   - **Invariant:** each host is in at most one of {waiting, ready, in flight}. The `scheduled` flag tracks heap membership.
 
@@ -458,7 +458,7 @@ mod tests {
     3. Otherwise return `WaitUntil(earliest waiting)`, else `Idle` if `in_flight > 0`, else `Done`.
   - `dispatch(id, now)`:
     1. Set `scheduled = false`; a dead host → `None`.
-    2. If robots is `Unknown`, or `Ready` but older than `ROBOTS_TTL` (24 h): set `Fetching` and `in_flight = true`, and return a `Job::Robots`.
+    2. If robots is `None` or older than `ROBOTS_TTL` (24 h): set `in_flight = true`, and return a `Job::Robots`.
     3. Otherwise pop entries. If `fetched ≥ per_host_cap`, drop the whole queue (`dropped_cap`) and return `None`. Skip and count URLs that robots disallows. On the first allowed URL: `in_flight = true`, `fetched += 1`, return a `Job::Page`.
   - `complete_page` (this is the politeness formula):
 
@@ -468,7 +468,7 @@ pub fn complete_page(&mut self, id: HostId, outcome: Outcome, now: Instant) {
     let cfg = &self.cfg;
     let h = &mut self.hosts[id as usize];
     h.in_flight = false;
-    let crawl_delay = match &h.robots { RobotsState::Ready(r, _) => r.crawl_delay(), _ => None }.unwrap_or_default();
+    let crawl_delay = h.robots.as_ref().and_then(|(r, _)| r.crawl_delay()).unwrap_or_default();
     let (elapsed, retry_after) = match outcome {
         Outcome::Ok { elapsed } => { h.failures = 0; h.backoff = (h.backoff / 2).max(1); (elapsed, None) }
         Outcome::RateLimited { elapsed, retry_after } => { h.backoff = (h.backoff * 2).min(1024); (elapsed, retry_after) }
@@ -482,7 +482,7 @@ pub fn complete_page(&mut self, id: HostId, outcome: Outcome, now: Instant) {
         h.queue.clear();
     }
     let base = crawl_delay.max(cfg.min_delay).max(elapsed.mul_f64(cfg.delay_factor));
-    let delay = (base * h.backoff).min(cfg.max_backoff);
+    let delay = base.max((base * h.backoff).min(cfg.max_backoff)); // cap only the backoff's extra wait, never the site's Crawl-delay
     h.next_allowed = now + delay.max(retry_after.unwrap_or_default());
     self.schedule(id);
 }
@@ -490,7 +490,7 @@ pub fn complete_page(&mut self, id: HostId, outcome: Outcome, now: Instant) {
 
   - `complete_robots`:
     - Decrement `in_flight` and clear the host's `in_flight`.
-    - **`Unreachable`:** `robots_attempts += 1`, robots back to `Unknown`. If `attempts ≥ max_robots_attempts`, mark the host dead and drop its queue. Otherwise set `next_allowed = now + robots_retry × 2^(attempts−1)`.
+    - **`Unreachable`:** `robots_attempts += 1`, robots back to `None`. If `attempts ≥ max_robots_attempts`, mark the host dead and drop its queue. Otherwise set `next_allowed = now + robots_retry × 2^(attempts−1)`.
     - **Anything else:** reset attempts, set `Ready(rules, now)`, set `next_allowed = now + max(crawl_delay, min_delay, k × elapsed)`.
     - Then `schedule(id)`.
   - Add `// ponytail:` comments:
