@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 lol_html = "3.0.3"
 texting_robots = "0.2.2"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 url = "2.5.8"
 xxhash-rust = { version = "0.8.21", features = ["xxh3"] }

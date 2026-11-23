@@ -747,6 +747,18 @@ fn ceiling_excludes_robots_down_and_respects_crawl_delay() {
 ```
 
 - [ ] **Step 2:** Run `cargo test mockweb`. Expect FAIL. Then implement. Run `cargo test mockweb`. Expect PASS.
+
+  **As built** (tests in `tests/mockweb.rs`):
+  - **Dependencies:**
+    - axum with default features off (`tokio`, `http1` only).
+    - tokio also gets `io-util`, used by the raw-TCP HTTP tests. Those tests don't need reqwest, so the server is checked on its own, before Task 8.
+  - **Additions to the design:**
+    - Every page with `page % 10 == 9` copies the page before it except for the title. This plants near-duplicates (same SimHash, different body hash), so later crawl tests can check dedup end to end.
+    - `host_index` accepts only the exact `host_name` spelling.
+    - Host names in requests are case-insensitive.
+    - `at` is logged on arrival, before the latency, because politeness is judged by arrival times.
+    - The rate-limit counter is atomic per host, so it stays exact under parallel requests.
+  - **Checks:** 15 tests (the plan's 3 plus behavior/robots agreement checked through `RobotsRules`, mock pages parsed with `parse`, config edge cases, every HTTP route, 429 cadence interleaved and under 300 parallel requests, the request log, latency) and 30 mutations, all caught.
 - [ ] **Step 3:** Update `STATE.md`. Commit: `feat(mockweb): deterministic synthetic web with behaviours`.
 
 ### Task 8: `fetch.rs`
