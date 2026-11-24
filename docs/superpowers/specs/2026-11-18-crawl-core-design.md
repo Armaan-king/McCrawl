@@ -51,7 +51,7 @@ Each sub-project gets its own spec → plan → build cycle, in this order:
            └──► next() ──► Fetch task ×N (async) ──► complete(host) ──┘ (reschedule: now + delay)
                                 │
                                 ▼ bounded channel (backpressure)
-                          Parse pool (spawn_blocking, ≤ CPU cores)
+                          Parse pool (one thread per CPU core)
                           links+anchors, text, title, canonical, meta robots, SimHash
                             │                         │
           new URLs ◄─ normalize ◄─ seen-set ◄─────────┤
@@ -125,7 +125,7 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 
 - **Hand-written** because they're the heart of the design: the frontier and politeness logic, SimHash with the near-dup index, the WARC writer.
 - **Crates:** `tokio`, `reqwest` (rustls, gzip, brotli, hickory-dns), `url`, `texting_robots`, `lol_html` (streaming HTML rewriter: one pass, no DOM, low memory), `xxhash-rust` (xxh3, hashes stable across runs and in Python), `serde`, `serde_json`, `flate2`, `clap` (derive), `axum`.
-- **Std only:** the seen-set, the parse pool (`spawn_blocking` + `Semaphore`), logging (`eprintln!`), memory stats (`/proc/self/status`).
+- **Std only:** the seen-set, the parse pool (one thread per core sharing a job queue), logging (`eprintln!`), memory stats (`/proc/self/status`).
 - Versions are pinned to current releases when each crate is added; docs are checked at that time.
 
 ## 8. Error handling
@@ -133,7 +133,7 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 | Outcome | Action |
 |---|---|
 | Timeout, connection error (including DNS and TLS, which reqwest doesn't distinguish cleanly), 5xx | Retry ≤ 2× through the frontier (politeness applies); 5 consecutive failures kill the host |
-| 429 / 503 | Per-host backoff, honor `Retry-After` |
+| 429 / 503 | Per-host backoff, honor `Retry-After`; the URL is retried ≤ 2× like other failures, but rate limiting never counts toward killing the host |
 | 4xx (not 429) | Permanent, recorded, no retry |
 | Non-HTML Content-Type | Skip before downloading the body |
 | Body > 2 MB | Truncate, set `truncated: true`, add a `WARC-Truncated` header |

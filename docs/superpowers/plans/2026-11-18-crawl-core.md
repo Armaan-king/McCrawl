@@ -1128,6 +1128,18 @@ mod tests {
 ```
 
 - [ ] **Step 2:** Run `cargo test crawler`. Expect FAIL. Implement the stages in the order fetch task → parse dispatcher → scheduler loop → teardown, compiling after each. Run `cargo test crawler`. Expect PASS.
+
+  **As built** (tests in `tests/crawler.rs`):
+  - **Changes from the sketch above:**
+    - The parse pool is one std thread per core, sharing the job queue behind a `Mutex` (held only while waiting). The queue is as deep as the pool, not `concurrency`: fetch tasks waiting to hand over a page are the real buffer, so memory is bounded by `concurrency + cores` bodies either way. Each job runs under `catch_unwind` and always sends one links message, so a parser panic can't leave the scheduler waiting.
+    - A store failure is noticed through `store_tx.closed()` in the scheduler's `select!`: the store thread drops its receiver when it fails. The crawl then stops and `run` returns the store's own `io::Error`, without writing `report.json`. Fetch tasks and parse threads ignore send errors.
+    - 429 and every 5xx are retried (≤ 2×), not only 5xx, so a rate-limited URL isn't lost. Rate limiting still never counts toward killing the host. Errors are retried only if `retryable()` (timeout, connect), so a corrupt body isn't refetched. Only 2xx HTML is parsed and archived; an HTML error page is recorded, not followed.
+    - `retries` counts retry fetches started; `redirects` counts redirect targets queued (a target already seen isn't). A redirect target starts with fresh retries.
+    - `CrawlConfig` gained `grace` (default 10 s) and `warc_rotate_at` (default 1 GiB), so shutdown and store failure can be tested in seconds.
+    - `run` refuses settings that would hang or panic deep in the crawl: concurrency 0, k outside 0..=1000 (NaN too), `min_delay`/`robots_retry`/`grace` over 24 h, `progress_every` of 0 or over 24 h. It does so before creating anything, and builds the `Fetcher` (which rejects a bad User-Agent) before opening the store.
+    - `report.json` is the `Report` plus a `config` object (seed count, budget, concurrency, delays, agents, limits, parse workers), created with `create_new`.
+    - Teardown uses `JoinSet::shutdown().await`, so aborted fetch tasks have really dropped their channel handles before the parse pool is drained and the store joined.
+  - **Checks:** 10 tests (the plan's 2, made exact: the budget to the fetch, and shutdown checked against the server's request log; plus a crawl that ends by itself with every linked page fetched once, a 6-host scenario site covering redirects, retries, Retry-After, nofollow, error pages, dead hosts and unreachable robots.txt with exact totals, the concurrency limit, the wait between requests and its idle-time count, the grace period abandoning a hung fetch, a store failure, bad settings, and never overwriting output). 77 mutations, all caught; 10 of 10 repeat runs pass. Not testable without a parser that panics: the `catch_unwind` that keeps one links message per job.
 - [ ] **Step 3:** Run `cargo test` (everything) and `cargo clippy --all-targets -- -D warnings`.
 - [ ] **Step 4:** Update `STATE.md`. Commit: `feat(crawler): scheduler actor, fetch/parse/store pipeline`.
 

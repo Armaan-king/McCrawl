@@ -1,3 +1,4 @@
+pub mod crawler;
 pub mod dedup;
 pub mod fetch;
 pub mod frontier;
