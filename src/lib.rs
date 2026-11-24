@@ -1,6 +1,7 @@
 pub mod dedup;
 pub mod fetch;
 pub mod frontier;
+pub mod metrics;
 pub mod mockweb;
 pub mod parse;
 pub mod robots;

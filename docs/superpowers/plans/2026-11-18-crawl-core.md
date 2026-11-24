@@ -1004,6 +1004,15 @@ The scheduler is the only owner of `Tally`, so the counters are plain fields; at
   - `parse_cpu_secs("1 (my (weird) comm) S 0 0 0 0 0 0 0 0 0 0 250 150 0 0") == Some(4.0)`.
   - `peak_rss_mb().is_some()` (runs on Linux/WSL).
 - [ ] **Step 2:** Run `cargo test metrics`. Expect FAIL. Implement. Run `cargo test metrics`. Expect PASS.
+
+  **As built** (tests in `tests/metrics.rs`):
+  - **Changes from the sketch above:**
+    - `Tally::page(status, bytes, elapsed)` counts a response in one place, so the millisecond conversion (saturating at u32::MAX) isn't repeated in the crawler.
+    - `Report.errors` keeps `&'static str` keys; it is only serialized.
+    - `pages_per_sec` is 0 for zero wall time, because serde_json writes infinity as null.
+    - `percentile` shaves the rank product by 1e-12, so float error (0.07 × 100 = 7.000000000000001) can't move it up a rank. p outside 0..=1 needs no clamp: the cast saturates and the rank is clamped.
+    - `parse_cpu_secs` adds the two tick counts as f64, so hostile input can't overflow.
+  - **Checks:** 9 tests (the plan's 4 groups, plus an exact integer-rank check over 10 sizes, real-format `/proc` lines, live readers checked against the raw VmHWM and against 64 MiB / 300 ms of real work, the report's JSON key sets, and the exact progress line) and 24 mutations, all caught (the float shave is caught only by the exact-rank check, which shows the float error is real).
 - [ ] **Step 3:** Update `STATE.md`. Commit: `feat(metrics): tally, percentiles and /proc readers`.
 
 ### Task 11: `crawler.rs` — the scheduler actor and pipeline

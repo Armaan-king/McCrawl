@@ -104,7 +104,7 @@ pub struct FrontierConfig {
     pub max_robots_attempts: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct FrontierStats {
     pub hosts: usize,
     pub dead_hosts: usize,
