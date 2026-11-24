@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
+flate2 = "1.1.11"
 lol_html = "3.0.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "gzip", "brotli", "zstd", "hickory-dns"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 texting_robots = "0.2.2"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 url = "2.5.8"
 xxhash-rust = { version = "0.8.21", features = ["xxh3"] }
-
-[dev-dependencies]
-flate2 = "1.1.11"

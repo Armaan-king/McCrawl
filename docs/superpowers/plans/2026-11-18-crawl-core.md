@@ -857,7 +857,7 @@ mod tests {
 
 ### Task 9: `store.rs`
 
-**Files:** Create `src/store.rs`; add `pub mod store;`. Run `cargo add flate2@1.1.11 serde@1.0.229 --features serde/derive` and `cargo add serde_json@1.0.154`.
+**Files:** Create `src/store.rs`; add `pub mod store;`. Run `cargo remove --dev flate2`, `cargo add flate2@1.1.11`, `cargo add serde@1.0.229 --features derive` and `cargo add serde_json@1.0.154`. (The form `--features serde/derive` with two versioned crates is rejected by cargo.)
 
 **Produces:**
 
@@ -961,6 +961,16 @@ mod tests {
     - The record goes to `pages.jsonl` through a `BufWriter`; the WARC response is written if a payload is present.
   - **`spawn`:** a std thread loop. `try_recv` → write. `Empty` → flush, then `blocking_recv`. `None` or `Disconnected` → `finish`. This flushes whenever the pipeline goes idle, so a crash leaves valid files behind.
 - [ ] **Step 4:** Run `cargo test store`. Expect PASS.
+
+  **As built** (tests in `tests/store.rs`):
+  - **Changes from the sketch above:**
+    - Files are opened with `create_new`, so a reused output directory fails instead of overwriting an earlier crawl (the first WARC file, `pages.jsonl`, and any file a rotation would land on).
+    - Rotation is checked before each response, and only once something has been archived. So no file is only a `warcinfo`, except the single file of a crawl that archived nothing. `rotate_at` counts compressed bytes.
+    - The writer compresses the header, `http_head`, body and trailer straight into one reused buffer, so the body is not copied into a record first. `warc_record` stays for framing tests and `warcinfo`.
+    - Record IDs are RFC 9562 version-8 UUIDs (the vendor-defined version, honest about not being random), from xxh3_128(clock, pid, a process-wide counter). The `warcinfo` record also carries `WARC-Filename`.
+    - The store sets `simhash`, `body_hash` and `near_dup` itself. Every nonzero fingerprint is indexed, near duplicates included, so a chain (C near B, B near A) still marks C. `near_dup` is the earliest page the index finds. A body hash of 0 is an ordinary value; only a SimHash of 0 (no text) is skipped.
+    - `StoreSummary.warc_records` counts responses; each file's `warcinfo` is implied by `warc_files`.
+  - **Checks:** 24 tests (the plan's 4, plus a 450-year calendar check, exact framing, a per-member WARC reader, rotation timing, hostile URLs, overwrite refusal, duplicate-marking rules, JSONL escaping and schema, and the store thread's ordering, idle flush and empty finish). 43 of 44 mutations caught; the survivor is the `>=` vs `>` rotation boundary, which random record IDs make untestable and which only shifts one record between files. An early warcio read of files written from real mock-web fetches passed (6 files, 121 responses, 1 truncated).
 - [ ] **Step 5:** Update `STATE.md`. Commit: `feat(store): WARC writer, JSONL and near-dup marking`.
 
 ### Task 10: `metrics.rs`

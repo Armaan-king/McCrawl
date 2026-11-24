@@ -74,7 +74,7 @@ There is one process, one tokio multi-threaded runtime and one binary crate.
 | `src/fetch.rs` | Two `reqwest::Client`s (pages: redirects off; robots.txt: ≤ 5 redirects, per RFC 9309): pooling, timeouts (10 s connect / 30 s total), 2 MB body cap, gzip/brotli, `hickory-dns`, **redirects disabled** (the `Location` header becomes a new frontier URL, hop count ≤ 5), Content-Type checked before reading the body. Returns a `FetchResult` or `FetchError` | `reqwest` |
 | `src/parse.rs` | `parse(url, body) -> Parsed { title, text, canonical, noindex, nofollow, links: Vec<Link{url, anchor, nofollow}> }`. Single-pass **streaming** parse with `lol_html` element/text handlers (`a[href]` + anchor text, `title`, `link[rel=canonical]`, `meta[name=robots]`, visible text with `script`/`style` skipped). No DOM is built. Boilerplate removal and main-content extraction are left to SP5, which reads the raw HTML from WARC | `lol_html`, `urlnorm` |
 | `src/dedup.rs` | Seen-URL `HashSet<u64>` (xxh3 of canonical URL); exact body hash (xxh3); 64-bit SimHash over word 3-shingles; `hamming(a, b)`; near-duplicate if distance ≤ 3. `NearDupIndex` uses Manku et al.'s (Google, 2007) block trick, not a linear scan: split the fingerprint into 4 × 16-bit blocks and keep 4 hash maps from block value to fingerprints. By pigeonhole, any fingerprint within distance ≤ 3 matches one block exactly, so only those buckets are checked | `xxhash-rust` |
-| `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, files rotate at 1 GB) and `pages.jsonl`; periodic flush | `flate2`, `serde_json` |
+| `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, files rotate at 1 GB) and `pages.jsonl`; flushed whenever its queue runs empty | `flate2`, `serde_json` |
 | `src/metrics.rs` | Atomic counters, a periodic progress line, final `report.json` | std |
 | `src/mockweb.rs` | Synthetic web. Hosts `h{i}.mock`, deterministic pages from `hash(host, path)`, configurable latency, robots variants (disallow paths, crawl-delay, 5xx robots), injected 429s, request log `(host, path, time)` | `axum`, `tokio` |
 
@@ -169,7 +169,7 @@ mccrawl bench   --hosts 10000 --pages 200000 --mode polite|raw [--concurrency 64
 - The crawl stops when the budget is reached, the frontier is empty with nothing in flight, or Ctrl-C is pressed.
 - On Ctrl-C it stops handing out URLs, waits up to 10 s for in-flight fetches, flushes, then writes `report.json`.
 
-**Crash safety:** Output is append-only. Each WARC record is its own gzip member and each JSONL row is one line, and both are flushed periodically, so a crash leaves all earlier output readable.
+**Crash safety:** Output is append-only. Each WARC record is its own gzip member and each JSONL row is one line, and both are flushed whenever the store's queue runs empty, so a crash leaves all earlier output readable. Output files are created new, never overwritten.
 
 **User agent:** `McCrawl/0.1 (+<contact URL>)`. The author supplies the contact URL when `fetch.rs` is built.
 
