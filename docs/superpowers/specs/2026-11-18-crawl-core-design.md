@@ -174,7 +174,7 @@ mccrawl bench   --hosts 10000 --pages 200000 --mode polite|raw [--concurrency 64
 **User agent:** `McCrawl/0.1 (+<contact URL>)`. The author supplies the contact URL when `fetch.rs` is built.
 
 **Output files:**
-- `crawl-NNNNN.warc.gz`. Response records store the decoded body, so the stored HTTP header block drops `Content-Encoding` and `Transfer-Encoding` and sets `Content-Length` to the stored body length.
+- `crawl-NNNNN.warc.gz`. Response records store the decoded body, so the stored HTTP header block has no `Content-Encoding` for a decoded body (reqwest removes it when it decodes; one still present is true of the stored bytes and is kept), drops `Transfer-Encoding`, and sets `Content-Length` to the stored body length.
 - `pages.jsonl`, one row per fetch: `url, host, depth, parent_url, priority, fetched_at, status, error, content_type, bytes, truncated, title, text, canonical, noindex, links[{url, anchor, nofollow}], simhash (hex), body_hash (hex), near_dup` (`near_dup` is the URL of an earlier page within SimHash distance ≤ 3, or `null`)
 - `report.json`: config, wall time, pages/s, bytes, status and error histograms, politeness wait, exact and near-duplicate rates, p50/p99 fetch latency, peak RSS
 

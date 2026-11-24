@@ -18,7 +18,7 @@ The spec is approved. This plan turns it into 15 tasks, built one file at a time
 1. **The frontier is owned by a scheduler task instead of sitting behind a `Mutex`.** The `Frontier` is a plain `&mut self` struct that takes `now: Instant` as an argument. That gives no lock contention, no thundering herd of 512 tasks waking on one `Notify`, and fully deterministic unit tests that need no sleeping. The ceiling is the same as the spec's (one core runs the scheduler). Sub-project 2 shards it by `hash(host)`.
 2. **`src/lib.rs` and `src/crawler.rs` are added**, so integration tests can run a real crawl. `main.rs` only handles the CLI.
 3. **DNS and TLS failures are grouped with connect errors** (retried up to 2×). reqwest doesn't expose a clean way to tell them apart. The 5-consecutive-failures rule still kills dead hosts quickly.
-4. **WARC HTTP headers are corrected.** reqwest returns decoded bodies, so the stored header block drops `Content-Encoding` and `Transfer-Encoding` and sets `Content-Length` to the stored body length.
+4. **WARC HTTP headers are corrected.** reqwest returns decoded bodies, so the stored header block has no `Content-Encoding` for a decoded body (reqwest removes it itself; one it didn't decode stays, since it is true of the stored bytes), drops `Transfer-Encoding`, and sets `Content-Length` to the stored body length.
 5. **robots.txt 5xx or unreachable:** the host's URLs stay queued and are not fetched. robots is retried after `robots_retry` × 2^(attempt−1). After 3 failed attempts the host is dropped.
 
 ## Global constraints
@@ -842,6 +842,17 @@ mod tests {
   - **`http_head`:** `HTTP/1.1 {code} {canonical_reason}\r\n` plus headers, minus `content-encoding`, `transfer-encoding` and `content-length`, plus `Content-Length: {body.len()}`, plus `\r\n`.
   - **Error mapping:** `is_timeout()` → `Timeout`, `is_connect()` → `Connect`, otherwise `Other(e.to_string())`.
 - [ ] **Step 4:** Run `cargo test fetch`. Expect PASS.
+
+  **As built** (tests in `tests/fetch.rs`):
+  - **Build:** aws-lc-sys built without cmake. `flate2` is added now as a dev-dependency (gzip test bodies); Task 9 moves it to `[dependencies]`.
+  - **Changes from the sketch above:**
+    - `FetchError::Connect` carries the cause (`Connect(String)`), so a report can tell DNS, refused and TLS apart. Messages are `kind: cause chain`, without the URL.
+    - `Content-Encoding` is not stripped by us: reqwest (tower-http) removes it, with `Content-Length`, only when it decodes, so one still present (an encoding we don't decode) is true of the stored bytes. `Transfer-Encoding` and the server's `Content-Length` are always dropped.
+    - Each client sends an `Accept` header (`text/html,…` for pages, `text/plain,*/*` for robots.txt). Compression is on by default with the features; reqwest advertises `zstd,gzip,br`.
+    - Header values are read lossily (a raw UTF-8 `Location` works) and written to `http_head` as raw bytes.
+    - `parse_retry_after` takes digits only (`+5` and `1.5` are rejected); a value too big for u64 saturates, and the frontier caps it at 24 h.
+    - The buffer reservation from `Content-Length` is capped at `max_body`, and the read stops as soon as the cap is reached.
+  - **Checks:** 25 tests (the plan's 3 plus hand-written servers for compression, bombs, cap boundaries, content types, raw headers, redirect limits, timeouts including a separate connect timeout, TLS and broken responses) and 48 mutations, all caught.
 - [ ] **Step 5:** Update `STATE.md`. Commit: `feat(fetch): reqwest fetcher with body cap and classified errors`.
 
 ### Task 9: `store.rs`
