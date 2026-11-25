@@ -188,9 +188,7 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// `parts`, compressed as one gzip member.
-// ponytail: level 6 with flate2's default backend (miniz_oxide); the zlib-rs backend is faster
-// if the parse pool's CPU becomes the limit.
+/// `parts`, compressed as one gzip member, at level 6 (zlib-rs, see Cargo.toml).
 fn gzip(parts: &[&[u8]]) -> Vec<u8> {
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     for part in parts {
