@@ -1268,6 +1268,27 @@ if __name__ == "__main__":
 - [ ] **Step 3: Run.**
   - `cargo test --test politeness` → PASS.
   - Run a short bench into `$HOME/mccrawl-data/check`, then `uv run --with warcio python tests/warc_check.py $HOME/mccrawl-data/check/*/crawl-*.warc.gz` → `OK {...}`.
+
+  **As built:**
+  - **`tests/politeness.rs` is stricter than the sketch:**
+    - **No slack.** The crawler and the mock share one process and one monotonic clock, and every request starts after the last response plus its delay. So each gap must be at least the previous response time (from the new `mockweb::latency`) plus the whole delay it earned.
+    - **The delay is checked in full:** the minimum, Crawl-delay, k × response time (1–60 ms responses make it decide about a third of the gaps), Retry-After, and the robots retry backoff (300 ms, doubling).
+    - **robots.txt is checked too:** first and once per host; hosts with it down get nothing else and are given up after 3 tries.
+    - **No hidden requests:** the server saw exactly what the report counts, and every request has an expected status.
+    - **No empty proof:** it fails if any rule never decided a gap.
+    - Small pages (300 words), so it runs in about 6 s, still bound by politeness.
+  - **`tests/warc_check.py` takes crawl directories, not files:**
+    - every file numbered and starting with its own warcinfo;
+    - record IDs well formed and unique;
+    - each HTTP Content-Length equal to its stored body;
+    - the responses equal to `pages.jsonl`'s archived rows (status, truncation) and to `report.json`'s counts.
+    - warcio's own errors are reported with the file and record.
+  - **Checks:**
+    - **The proof against broken politeness:** 17 politeness bugs put into the frontier, crawler and robots code; the proof catches 16. The one left can't cause a request: the frontier never asks unreachable robots rules anything, and `tests/robots.rs` catches it.
+    - **Repeat runs:** it passed 3 runs alone and 3 alongside other test suites.
+    - **`warc_check.py` on real output:** it passes on two bench runs and step 12's smoke run (29,210 archived pages).
+    - **The checker against broken files:** it refuses 11 of 11 broken copies, among them a cut-off file, a missing warcinfo, a repeated record, wrong lengths, a bad record ID, a missing URI, rows that don't match and a wrong report.
+    - **A truncated page** (mock pages never link to `/big`, so bench output has none): `mccrawl crawl` of a local site with a 3 MiB page. That page is cut at exactly 2 MiB, marked `WARC-Truncated: length` and `truncated` in its row, and passes.
 - [ ] **Step 4:** Update `STATE.md`. Commit: `test: politeness proof and warcio validation`.
 
 ### Task 14: Benchmarks and profiling

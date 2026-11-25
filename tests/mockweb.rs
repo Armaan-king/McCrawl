@@ -394,6 +394,40 @@ async fn every_request_is_logged_with_host_path_and_status() {
     assert!(hits[0].at >= t0 && hits.windows(2).all(|w| w[0].at <= w[1].at));
 }
 
+#[test]
+fn latency_is_fixed_per_page_and_within_the_range() {
+    let cfg = MockConfig {
+        latency_ms: (20, 200),
+        ..Default::default()
+    };
+    let of = |host: u32| -> Vec<u128> {
+        (0..200)
+            .map(|p| mockweb::latency(&cfg, host, &format!("/p/{p}")).as_millis())
+            .collect()
+    };
+    let a = of(7);
+    assert!(a.iter().all(|ms| (20..=200).contains(ms)), "{a:?}");
+    assert!(
+        a.iter().any(|&ms| ms < 60) && a.iter().any(|&ms| ms > 160),
+        "not spread: {a:?}"
+    );
+    assert_eq!(a, of(7), "the same page always takes the same time");
+    assert_ne!(a, of(8), "hosts differ");
+    let fixed = MockConfig {
+        latency_ms: (150, 150),
+        ..Default::default()
+    };
+    assert_eq!(
+        mockweb::latency(&fixed, 3, "/robots.txt"),
+        Duration::from_millis(150)
+    );
+    let wide = MockConfig {
+        latency_ms: (0, u64::MAX),
+        ..Default::default()
+    };
+    let _ = mockweb::latency(&wide, 0, "/p/1"); // no overflow
+}
+
 #[tokio::test]
 async fn responses_wait_the_latency_but_hits_record_arrival() {
     let cfg = MockConfig {

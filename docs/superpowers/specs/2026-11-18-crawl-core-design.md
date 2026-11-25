@@ -196,11 +196,12 @@ No test frameworks: `cargo test` plus one Python check.
   - dedup: SimHash distance is small for near-identical texts and large for different ones; seen-set behavior.
   - parse: links, anchors and nofollow/noindex from fixture HTML.
   - store: WARC record framing.
-- **`tests/politeness.rs`:** Starts an in-process mock web with 1,000 hosts and crawls it. From the request log it asserts:
-  - (a) the gap between requests to the same host is ≥ the configured delay;
-  - (b) no robots-disallowed path was requested;
-  - (c) hosts returning 429 were backed off.
-- **`tests/warc_check.py`:** Run with `uv run --with warcio`. Reads every WARC record of a test crawl, an independent check that the files are valid.
+- **`tests/politeness.rs`:** Starts an in-process mock web with 1,000 hosts and crawls it. From the request log, with no slack (one process, one clock), it asserts:
+  - (a) each request to a host arrives at least the previous response's time, plus the whole delay it earned: max(minimum, Crawl-delay, k × response time), at least Retry-After after a 429, and the robots retry × 2^(n-1) after the n-th robots.txt failure;
+  - (b) robots.txt comes first and once per host, and no disallowed path is requested;
+  - (c) a host with robots.txt down gets nothing else, and is given up after 3 tries;
+  - (d) the server saw exactly the requests the crawler reports, and each rule above decided some gaps, so none passed untested.
+- **`tests/warc_check.py`:** Run with `uv run --with warcio`. Reads every WARC record of a crawl with warcio, an independent check that the files are valid. It also checks that the records match `pages.jsonl` and `report.json`.
 
 ## 11. Benchmarks
 

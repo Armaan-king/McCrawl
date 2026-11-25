@@ -259,7 +259,7 @@ async fn handle(State(web): State<Arc<Shared>>, req: Request) -> Response {
         Some(i) => respond(&web, i, path),
         None => (StatusCode::NOT_FOUND, "unknown host\n").into_response(),
     };
-    let delay = index.map_or(0, |i| latency_ms(&web.cfg, i, path));
+    let delay = index.map_or(Duration::ZERO, |i| latency(&web.cfg, i, path));
     let status = resp.status().as_u16();
     let path = path.to_owned();
     web.hits.lock().unwrap().push(Hit {
@@ -268,8 +268,8 @@ async fn handle(State(web): State<Arc<Shared>>, req: Request) -> Response {
         at,
         status,
     });
-    if delay > 0 {
-        tokio::time::sleep(Duration::from_millis(delay)).await;
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
     }
     resp
 }
@@ -319,9 +319,11 @@ fn page_number(path: &str) -> Option<u32> {
         .ok()
 }
 
-fn latency_ms(cfg: &MockConfig, host: u32, path: &str) -> u64 {
+/// How long `host` takes to answer `path`: fixed, so tests can work out the least politeness
+/// gap after each request.
+pub fn latency(cfg: &MockConfig, host: u32, path: &str) -> Duration {
     let (lo, hi) = cfg.latency_ms;
     // Saturating, so the widest range (0..=u64::MAX) can't overflow; lo + the rest stays ≤ hi.
     let span = hi.saturating_sub(lo).saturating_add(1);
-    lo + xxh3_64_with_seed(path.as_bytes(), u64::from(host)) % span
+    Duration::from_millis(lo + xxh3_64_with_seed(path.as_bytes(), u64::from(host)) % span)
 }
