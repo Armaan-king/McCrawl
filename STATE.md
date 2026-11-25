@@ -211,6 +211,7 @@
       - **polite:** the 8.5 pages/s ceiling and its share;
       - **Ctrl-C** during the first run: it stops early and the rest are skipped.
 - `README.md`: project overview with Mermaid diagrams: crawl pipeline, per-host frontier state machine, politeness formula, dedup layers, roadmap, sub-project 1 build order. **After each task:** bump the status line and mark the task's box `:::done`. Mirrors: spec §2 and §4–§6, plan task list.
+- `seeds/technical.txt`: the seed list for the real crawl: 163 URLs on 160 hosts in 8 `#` groups (language and platform docs; systems, OS and networking; databases and storage; distributed systems and infrastructure; company engineering blogs; individual experts; machine learning; web and security). Picked for depth, plain HTML, open robots.txt and no paywall; GitHub, X/Twitter, Reddit, Medium-only blogs, Stack Overflow, Wikipedia and arXiv left out on purpose. Read by: `mccrawl crawl --seeds` (`crawler::parse_seeds`).
 - `.gitignore`: ignores `/target`, `/.cargo/`, local envs, secrets, crawl output (`data/`, `output/`) and `*.log`.
 - `CLAUDE.md`: workflow rules for Claude Code (WSL terminal, STATE.md-first workflow).
 - `AGENTS.md`: same rules for non-Claude agents (Codex etc.); mirror rule changes into `CLAUDE.md`.
