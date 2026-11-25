@@ -1307,6 +1307,26 @@ if __name__ == "__main__":
 - [ ] **Step 3: Optimize** at most the top 2 hot spots from the profile. Likely candidates are per-word `to_lowercase` allocation in `simhash`, the parse output sink and URL re-serialization. Re-run the bench after each and record before/after pages/s. Keep `cargo test` green.
 - [ ] **Step 4:** Update `STATE.md`. Commit: `perf: <hot spot> (+X% raw pages/s)`, one commit per optimization.
 
+  **As built:**
+  - **Where the output went:** a run writes ~6.3 GB (two thirds of it `pages.jsonl`), and WSL's disk sat on a nearly full C:, so it was moved to D: (`wsl --manage Ubuntu --move`). Each concurrency ran as its own `bench` (one mock web each), and its output was deleted after it; the `bench.json` and `report.json` files are kept outside the repo. Holding the output in RAM (`/dev/shm`) instead ran Windows short of memory.
+  - **Profiling:** samply refuses at the default `perf_event_paranoid` = 2, so `perf` from Nix was used instead: `perf record -e cpu-clock:u` (user time only) and `perf report --no-children --sort symbol`, plus per-thread user/system CPU from `/proc/<pid>/task/*/stat`, which found the first hot spot before any profiler ran.
+  - **Results** (10k hosts, 200k pages a run; raw: no delays, 0 ms mock latency; polite: 1 s, k = 5, 20–200 ms; ceiling 8,500 pages/s):
+
+    | build | raw pages/s (64 / 256 / 1,024) | raw CPU s | polite pages/s | % of ceiling |
+    |---|---|---|---|---|
+    | before (release defaults) | 1,046 / 1,008 / 1,020 | 322 / 336 / 328 | | |
+    | + LTO profile | 1,021 / 1,014 / 1,038 | 326 / 329 / 318 | 541 / 1,039 / 1,009 | 6.4 / 12.2 / 11.9 |
+    | + fix 1 | 8,806 / 7,966 / 7,454 | 636 / 634 / 677 | | |
+    | + fix 2 | 10,262 / 8,128 / 10,072 | 307 / 317 / 337 | 541 / 2,171 / 6,644 | 6.4 / 25.5 / 78.2 |
+
+    Raw numbers vary by up to ~20% between runs (fix 1 at 1,024 slots measured 7,257 to 9,025). Latency p50/p99 in polite mode stays 111 / 200 ms, the mock's own.
+  - **Fix 1, `perf: compress WARC records in the parse pool`:** the store thread ran at 100% of one core (gzip level 6 of every record) while every other thread idled, so raw throughput was flat at ~1,000 pages/s. `StoreMsg::archived` now compresses each record on the parse thread; the store only appends. Mutation check: 12 of 13 caught; the survivor removes the flush before rotation, which `BufWriter`'s drop also does.
+  - **Fix 2, `perf: zlib-rs deflate backend`:** with compression spread out, miniz_oxide's deflate was 68% of all CPU (user time). flate2's `zlib-rs` feature (which reqwest's gzip decoding then uses too) halved the CPU per page; deflate is now 38%. Every test passes and warcio reads the output; records compress to the same ~9.3 KB.
+  - **The shape:** low concurrency is bound by Little's law (64 slots ÷ 111 ms ≈ 580 pages/s; measured 541), 1,024 slots by politeness itself (a slot was free with no site allowed for 25 of the 30 s). The rest of the gap to 8,500 is the formula: each host waits after its response (~1.11 s a page), Crawl-delay hosts wait 2 s, and 429 hosts back off.
+  - **Next limits (not fixed here):**
+    - **Store:** the store thread is still the raw-mode limit, about two thirds of it kernel time writing ~300 MB/s of files. Upgrade path: serialize rows in the parse pool too, or split the WARC and JSONL writers.
+    - **Memory:** peak 2.5–3 GB, with ~2.3M URLs queued at the end; the in-memory frontier is the likely main part (not measured apart). SP2 moves the frontier to disk.
+
 ### Task 15: Real crawl, README, wrap-up
 
 **Files:** Create `seeds/technical.txt`. Modify `README.md` (add benchmarks, profiling, real-crawl stats; keep the existing diagrams), `STATE.md`.

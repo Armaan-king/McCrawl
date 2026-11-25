@@ -75,7 +75,7 @@ There is one process, one tokio multi-threaded runtime and one binary crate.
 | `src/fetch.rs` | Two `reqwest::Client`s (pages: redirects off; robots.txt: ≤ 5 redirects, per RFC 9309): pooling, timeouts (10 s connect / 30 s total), 2 MB body cap, gzip/brotli, `hickory-dns`, **redirects disabled** (the `Location` header becomes a new frontier URL, hop count ≤ 5), Content-Type checked before reading the body. Returns a `FetchResult` or `FetchError` | `reqwest` |
 | `src/parse.rs` | `parse(url, body) -> Parsed { title, text, canonical, noindex, nofollow, links: Vec<Link{url, anchor, nofollow}> }`. Single-pass **streaming** parse with `lol_html` element/text handlers (`a[href]` + anchor text, `title`, `link[rel=canonical]`, `meta[name=robots]`, visible text with `script`/`style` skipped). No DOM is built. Boilerplate removal and main-content extraction are left to SP5, which reads the raw HTML from WARC | `lol_html`, `urlnorm` |
 | `src/dedup.rs` | Seen-URL `HashSet<u64>` (xxh3 of canonical URL); exact body hash (xxh3); 64-bit SimHash over word 3-shingles; `hamming(a, b)`; near-duplicate if distance ≤ 3. `NearDupIndex` uses Manku et al.'s (Google, 2007) block trick, not a linear scan: split the fingerprint into 4 × 16-bit blocks and keep 4 hash maps from block value to fingerprints. By pigeonhole, any fingerprint within distance ≤ 3 matches one block exactly, so only those buckets are checked | `xxhash-rust` |
-| `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, files rotate at 1 GB) and `pages.jsonl`; flushed whenever its queue runs empty | `flate2`, `serde_json` |
+| `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, compressed by the parse pool so the writer only appends, files rotate at 1 GB) and `pages.jsonl`; flushed whenever its queue runs empty | `flate2`, `serde_json` |
 | `src/metrics.rs` | Counters owned by the scheduler (plain fields, no atomics), latency percentiles, CPU time and peak RSS from `/proc`, a `Progress` snapshot for the live display, the final report | `serde` |
 | `src/mockweb.rs` | Synthetic web. Hosts `h{i}.mock`, deterministic pages from `hash(host, path)`, configurable latency, robots variants (disallow paths, crawl-delay, 5xx robots), injected 429s, request log `(host, path, time)` | `axum`, `tokio` |
 
@@ -125,7 +125,7 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 ## 7. Libraries
 
 - **Hand-written** because they're the heart of the design: the frontier and politeness logic, SimHash with the near-dup index, the WARC writer.
-- **Crates:** `tokio`, `reqwest` (rustls, gzip, brotli, hickory-dns), `url`, `texting_robots`, `lol_html` (streaming HTML rewriter: one pass, no DOM, low memory), `xxhash-rust` (xxh3, hashes stable across runs and in Python), `serde`, `serde_json`, `flate2`, `clap` (derive), `axum`.
+- **Crates:** `tokio`, `reqwest` (rustls, gzip, brotli, hickory-dns), `url`, `texting_robots`, `lol_html` (streaming HTML rewriter: one pass, no DOM, low memory), `xxhash-rust` (xxh3, hashes stable across runs and in Python), `serde`, `serde_json`, `flate2` (zlib-rs backend), `clap` (derive), `axum`.
 - **Std only:** the seen-set, the parse pool (one thread per core sharing a job queue), logging (`eprintln!`), memory stats (`/proc/self/status`).
 - Versions are pinned to current releases when each crate is added; docs are checked at that time.
 
@@ -211,7 +211,7 @@ No test frameworks: `cargo test` plus one Python check.
 - **Raw mode:** delay 0, the engine's own ceiling.
 - **Concurrency sweep** at 64, 256 and 1024, which tests the single-lock ceiling.
 - **Every run reports** pages/s, p50/p99 latency, CPU and peak RSS.
-- **Profiling:** CPU profiles of raw mode with `samply`, viewed in the Firefox Profiler. Hot paths found there drive the optimizations, and each optimization gets a before/after number in the README.
+- **Profiling:** CPU profiles of raw mode with `perf record -e cpu-clock:u` (user time, so no `perf_event_paranoid` change is needed; `samply` works too once it is 1), plus per-thread CPU from `/proc`. Hot paths found there drive the optimizations, and each optimization gets a before/after number in the README.
 
 ## 12. Done criteria
 

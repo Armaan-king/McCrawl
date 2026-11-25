@@ -8,7 +8,7 @@ What it is built to do well:
 - **No repeats:** skip URLs it has already seen, and spot pages that are copies or near-copies of each other.
 - **Standard output:** save pages as WARC files, the format web archives use.
 
-> **Status:** part 1 (the core crawler) is being built, and 13 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
+> **Status:** part 1 (the core crawler) is being built, and 14 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
 
 ## How it works
 
@@ -129,7 +129,7 @@ flowchart TD
     crawler["11 · Crawler<br/>connects everything"]:::done
     cli["12 · Command line"]:::done
     proof["13 · Test that proves<br/>it is polite"]:::done
-    bench["14 · Speed tests<br/>+ finding slow spots"]
+    bench["14 · Speed tests<br/>+ finding slow spots"]:::done
     real["15 · Real crawl of<br/>technical websites"]
 
     urlnorm --> frontier
