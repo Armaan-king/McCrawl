@@ -554,10 +554,9 @@ fn parse_page(job: ParseJob, store_tx: &mpsc::Sender<StoreMsg>) -> Vec<UrlEntry>
             .map(|l| UrlEntry::child(l.url.clone(), &entry, parent.clone()))
             .collect()
     };
-    let msg = StoreMsg {
-        simhash: Some(simhash(&page.text)),
-        body_hash: Some(body_hash(&resp.body)),
-        record: PageRecord {
+    let (fingerprint, hash) = (simhash(&page.text), body_hash(&resp.body));
+    let msg = StoreMsg::archived(
+        PageRecord {
             status: Some(resp.status),
             content_type: resp.content_type,
             bytes: resp.body.len() as u64,
@@ -577,12 +576,14 @@ fn parse_page(job: ParseJob, store_tx: &mpsc::Sender<StoreMsg>) -> Vec<UrlEntry>
                 .collect(),
             ..record(&entry, fetched_at)
         },
-        warc: Some(WarcPayload {
+        Some(fingerprint),
+        Some(hash),
+        &WarcPayload {
             http_head: resp.http_head,
             body: resp.body,
             truncated: resp.truncated,
-        }),
-    };
+        },
+    );
     let _ = store_tx.blocking_send(msg);
     children
 }

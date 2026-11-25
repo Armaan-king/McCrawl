@@ -877,7 +877,8 @@ fn the_store_archives_pages_that_have_a_payload() {
         let mut m = msg(&format!("http://x.com/{i}"), None, None);
         m.record.fetched_at = 1_763_424_000_999 + i as u64 * 1000; // ms; the WARC date rounds down
         if archived {
-            m.warc = Some(payload(format!("page {i}").as_bytes(), i == 3));
+            let page = payload(format!("page {i}").as_bytes(), i == 3);
+            m = StoreMsg::archived(m.record, Some(0xF0 + i as u64), Some(i as u64), &page);
         }
         st.write(m).unwrap();
     }
@@ -910,7 +911,21 @@ fn the_store_archives_pages_that_have_a_payload() {
         responses[1].block,
         [payload(b"page 2", false).http_head, b"page 2".to_vec()].concat()
     );
-    assert_eq!(rows(&dir).len(), 4);
+    // `archived` keeps the hashes for the row.
+    let hashes: Vec<_> = rows(&dir)
+        .iter()
+        .map(|r| (r["simhash"].clone(), r["body_hash"].clone()))
+        .collect();
+    let hex = |v: u64| Value::from(format!("{v:016x}"));
+    assert_eq!(
+        hashes,
+        [
+            (hex(0xF0), hex(0)),
+            (Value::Null, Value::Null),
+            (hex(0xF2), hex(2)),
+            (hex(0xF3), hex(3)),
+        ]
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -959,9 +974,14 @@ fn the_store_thread_flushes_while_the_channel_is_idle() {
     let dir = tmp("idle");
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let handle = spawn(Store::open(&dir, 1 << 30).unwrap(), rx);
-    let mut m = msg("http://x.com/1", None, None);
-    m.warc = Some(payload(b"hi", false));
-    tx.blocking_send(m).unwrap();
+    let m = msg("http://x.com/1", None, None);
+    tx.blocking_send(StoreMsg::archived(
+        m.record,
+        None,
+        None,
+        &payload(b"hi", false),
+    ))
+    .unwrap();
     // Both files buffer 64 KB, so only the idle flush can put this one small page on disk.
     let warc = dir.join("crawl-00000.warc.gz");
     let deadline = Instant::now() + Duration::from_secs(5);

@@ -61,11 +61,35 @@ pub struct WarcPayload {
     pub truncated: bool,
 }
 
+/// A `response` record compressed as one gzip member, ready to append to a WARC file.
+pub struct WarcRecord(Vec<u8>);
+
 pub struct StoreMsg {
     pub record: PageRecord,
     pub simhash: Option<u64>,
     pub body_hash: Option<u64>,
-    pub warc: Option<WarcPayload>,
+    pub warc: Option<WarcRecord>,
+}
+
+impl StoreMsg {
+    /// A row whose page is archived: the record for the row's URL, dated from its `fetched_at`.
+    /// It is compressed here, on the caller's thread (the parse pool), because one store thread
+    /// compressing every page was the crawl's bottleneck; members are independent, so any
+    /// thread can make one.
+    pub fn archived(
+        record: PageRecord,
+        simhash: Option<u64>,
+        body_hash: Option<u64>,
+        page: &WarcPayload,
+    ) -> Self {
+        let warc = Some(response(&record.url, record.fetched_at / 1000, page));
+        Self {
+            record,
+            simhash,
+            body_hash,
+            warc,
+        }
+    }
 }
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -164,20 +188,35 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Compresses `parts` into `buf` as one gzip member.
-// ponytail: one thread compresses every record at level 6; if profiling shows the store is the
-// bottleneck, compress in the parse pool (members are independent) or use the zlib-rs backend.
-fn gzip(buf: &mut Vec<u8>, parts: &[&[u8]]) -> io::Result<()> {
-    buf.clear();
-    let mut gz = GzEncoder::new(buf, Compression::default());
+/// `parts`, compressed as one gzip member.
+// ponytail: level 6 with flate2's default backend (miniz_oxide); the zlib-rs backend is faster
+// if the parse pool's CPU becomes the limit.
+fn gzip(parts: &[&[u8]]) -> Vec<u8> {
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     for part in parts {
-        gz.write_all(part)?;
+        gz.write_all(part).expect("writing to memory can't fail");
     }
-    gz.finish().map(drop)
+    gz.finish().expect("writing to memory can't fail")
+}
+
+/// The `response` record of `url`, compressed.
+fn response(url: &str, unix_secs: u64, p: &WarcPayload) -> WarcRecord {
+    let truncated = [("WARC-Truncated", "length".to_owned())];
+    let extra: &[(&str, String)] = if p.truncated { &truncated } else { &[] };
+    let header = warc_header(
+        "response",
+        Some(url),
+        &iso8601(unix_secs),
+        "application/http;msgtype=response",
+        extra,
+        p.http_head.len() + p.body.len(),
+        &record_id(),
+    );
+    WarcRecord(gzip(&[&header, &p.http_head, &p.body, b"\r\n\r\n"]))
 }
 
 /// Creates `crawl-{index:05}.warc.gz`, never overwriting one, and writes its `warcinfo` record.
-fn new_file(dir: &Path, index: u32, gz: &mut Vec<u8>) -> io::Result<(BufWriter<File>, u64)> {
+fn new_file(dir: &Path, index: u32) -> io::Result<(BufWriter<File>, u64)> {
     let name = format!("crawl-{index:05}.warc.gz");
     let file = OpenOptions::new()
         .write(true)
@@ -195,8 +234,8 @@ fn new_file(dir: &Path, index: u32, gz: &mut Vec<u8>) -> io::Result<(BufWriter<F
         fields,
         &record_id(),
     );
-    gzip(gz, &[&info])?;
-    file.write_all(gz)?;
+    let gz = gzip(&[&info]);
+    file.write_all(&gz)?;
     Ok((file, gz.len() as u64))
 }
 
@@ -209,14 +248,12 @@ pub struct WarcWriter {
     file_bytes: u64,
     files: u32,
     records: u64,
-    gz: Vec<u8>,
 }
 
 impl WarcWriter {
     /// Starts `dir/crawl-00000.warc.gz`. Fails if it already exists.
     pub fn create(dir: &Path, rotate_at: u64) -> io::Result<Self> {
-        let mut gz = Vec::new();
-        let (file, file_bytes) = new_file(dir, 0, &mut gz)?;
+        let (file, file_bytes) = new_file(dir, 0)?;
         Ok(Self {
             dir: dir.to_owned(),
             rotate_at,
@@ -224,33 +261,24 @@ impl WarcWriter {
             file_bytes,
             files: 1,
             records: 0,
-            gz,
         })
+    }
+
+    pub fn write_response(&mut self, url: &str, unix_secs: u64, p: &WarcPayload) -> io::Result<()> {
+        self.append(&response(url, unix_secs, p))
     }
 
     /// Rotation happens here, before the record, so every file but the first gets a response
     /// right after its `warcinfo`; the first rotates only once it holds one. So no file is just a
     /// `warcinfo`, except the only file of a crawl that archived nothing.
-    pub fn write_response(&mut self, url: &str, unix_secs: u64, p: &WarcPayload) -> io::Result<()> {
+    fn append(&mut self, record: &WarcRecord) -> io::Result<()> {
         if self.records > 0 && self.file_bytes >= self.rotate_at {
             self.file.flush()?;
-            (self.file, self.file_bytes) = new_file(&self.dir, self.files, &mut self.gz)?;
+            (self.file, self.file_bytes) = new_file(&self.dir, self.files)?;
             self.files += 1;
         }
-        let truncated = [("WARC-Truncated", "length".to_owned())];
-        let extra: &[(&str, String)] = if p.truncated { &truncated } else { &[] };
-        let header = warc_header(
-            "response",
-            Some(url),
-            &iso8601(unix_secs),
-            "application/http;msgtype=response",
-            extra,
-            p.http_head.len() + p.body.len(),
-            &record_id(),
-        );
-        gzip(&mut self.gz, &[&header, &p.http_head, &p.body, b"\r\n\r\n"])?;
-        self.file.write_all(&self.gz)?;
-        self.file_bytes += self.gz.len() as u64;
+        self.file.write_all(&record.0)?;
+        self.file_bytes += record.0.len() as u64;
         self.records += 1;
         Ok(())
     }
@@ -317,9 +345,8 @@ impl Store {
         }
         record.simhash = simhash.map(hex);
         record.body_hash = body_hash.map(hex);
-        if let Some(p) = &warc {
-            self.warc
-                .write_response(&record.url, record.fetched_at / 1000, p)?;
+        if let Some(r) = &warc {
+            self.warc.append(r)?;
         }
         serde_json::to_writer(&mut self.jsonl, &record)?;
         self.jsonl.write_all(b"\n")?;
