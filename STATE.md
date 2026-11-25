@@ -12,7 +12,7 @@
 
 ## Files
 
-- `Cargo.toml`: crate `mccrawl`, edition 2024. Deps: `url`, `xxhash-rust` (xxh3), `texting_robots`, `lol_html`, `tokio` (rt-multi-thread, macros, net, time, sync, signal, io-util), `axum` (default features off; `tokio` + `http1` only), `reqwest` (default features off; rustls, http2, gzip, brotli, zstd, hickory-dns; aws-lc builds without cmake here), `flate2` (WARC gzip members), `serde` (derive), `serde_json`, `clap` (derive: the CLI, and `ui::Theme` as a value enum), `libc` (window size and open-file limit; it was already compiled in through tokio). No dev-dependencies: tests use `flate2` and `serde_json` from the normal ones. Used by: `cargo`.
+- `Cargo.toml`: crate `mccrawl`, edition 2024. Deps: `url`, `xxhash-rust` (xxh3), `texting_robots`, `lol_html`, `tokio` (rt-multi-thread, macros, net, time, sync, signal, io-util), `axum` (default features off; `tokio` + `http1` only), `reqwest` (default features off; rustls, http2, gzip, brotli, zstd, hickory-dns; aws-lc builds without cmake here), `flate2` (WARC gzip members), `serde` (derive), `serde_json`, `clap` (derive: the CLI, and `ui::Theme` as a value enum), `libc` (window size and open-file limit; it was already compiled in through tokio). No dev-dependencies: tests use `flate2` and `serde_json` from the normal ones. `[profile.release]`: fat LTO, one codegen unit, line tables (for profiles). Used by: `cargo`.
 - `Cargo.lock`: generated lockfile. Depends on: `Cargo.toml`.
 - `.cargo/config.toml` (gitignored, local only): `target-dir` outside the repo/OneDrive.
 - `src/lib.rs`: `pub mod` declarations (`crawler`, `dedup`, `fetch`, `frontier`, `metrics`, `mockweb`, `parse`, `robots`, `store`, `ui`, `urlnorm`). Used by: `src/main.rs`, `tests/`.

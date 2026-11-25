@@ -16,3 +16,9 @@ texting_robots = "0.2.2"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 url = "2.5.8"
 xxhash-rust = { version = "0.8.21", features = ["xxh3"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Line tables only: profiles show function names and lines without a full debug build.
+debug = "line-tables-only"
