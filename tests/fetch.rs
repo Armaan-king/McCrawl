@@ -4,6 +4,7 @@ use mccrawl::mockweb::{self, MockConfig, MockWeb};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -542,6 +543,60 @@ async fn a_server_that_never_answers_times_out() {
     let e = quick_timeout().fetch_page(&url).await.unwrap_err();
     assert!(matches!(e, FetchError::Timeout) && e.retryable(), "{e}");
     assert!(t.elapsed() < Duration::from_secs(3));
+}
+
+/// Answers only the first request on each connection, with keep-alive so a client could reuse
+/// it, then holds the connection open and ignores anything more: a connection gone silently
+/// dead while idle. Counts the connections.
+async fn answers_once_per_connection() -> (Url, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let conns = Arc::new(AtomicUsize::new(0));
+    let counted = conns.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            counted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut req = vec![];
+                let mut buf = [0; 4096];
+                while !req.ends_with(b"\r\n\r\n") {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let reply =
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 2\r\n\r\nhi";
+                let _ = sock.write_all(reply.as_bytes()).await;
+                let _ = sock.read_to_end(&mut vec![]).await; // never answers again
+            });
+        }
+    });
+    (url, conns)
+}
+
+#[tokio::test]
+async fn every_fetch_opens_its_own_connection() {
+    let (url, conns) = answers_once_per_connection().await;
+    let f = quick_timeout();
+    for i in 0..3 {
+        let r = f.fetch_page(&url).await;
+        assert_eq!(
+            r.map(|r| r.status).map_err(|e| e.to_string()),
+            Ok(200),
+            "page {i}"
+        );
+    }
+    for i in 0..2 {
+        let r = f.fetch_robots(&url).await;
+        assert_eq!(
+            r.map(|r| r.status).map_err(|e| e.to_string()),
+            Ok(200),
+            "robots {i}"
+        );
+    }
+    assert_eq!(conns.load(Ordering::SeqCst), 5);
 }
 
 #[tokio::test]

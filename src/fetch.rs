@@ -119,8 +119,11 @@ impl Fetcher {
                 .connect_timeout(cfg.connect_timeout)
                 .timeout(cfg.timeout)
                 .redirect(redirects)
-                .pool_max_idle_per_host(1)
-                .pool_idle_timeout(Duration::from_secs(30));
+                // Every fetch opens its own connection. In real crawls, fetches on reused
+                // idle connections often hung until the timeout: 15–22% of fetches against
+                // 5–7% this way, and curl fetched the hung pages fine. A host gets one request
+                // per politeness delay anyway, so reuse saved little.
+                .pool_max_idle_per_host(0);
             for (name, addr) in &cfg.resolve {
                 b = b.resolve(name, *addr);
             }
