@@ -8,7 +8,7 @@ What it is built to do well:
 - **No repeats:** skip URLs it has already seen, and spot pages that are copies or near-copies of each other.
 - **Standard output:** save pages as WARC files, the format web archives use.
 
-> **Status:** part 1 (the core crawler) is being built, and 14 of 15 steps are done. The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
+> **Status:** part 1 (the core crawler) is done: all 15 steps, 178 tests. Results are [below](#results). The full design is in [`docs/superpowers/specs/2026-11-18-crawl-core-design.md`](docs/superpowers/specs/2026-11-18-crawl-core-design.md), and the step-by-step plan is in [`docs/superpowers/plans/2026-11-18-crawl-core.md`](docs/superpowers/plans/2026-11-18-crawl-core.md).
 
 ## How it works
 
@@ -93,6 +93,82 @@ The first line keeps the crawler polite and the second keeps it useful. Both sta
 | An exact copy of a page | Compares a hash of the page content |
 | A near copy (same article, different ads) | Gives each page a text fingerprint (SimHash) so similar pages get similar fingerprints, then finds close matches with a lookup table instead of checking every page |
 
+## Results
+
+Measured on one laptop (32 cores, under WSL), never estimated.
+
+### Speed, on a fake web
+
+`mccrawl bench` crawls a fake web served on the same machine: 10,000 websites, pages of about 30 KB, 200,000 pages a run.
+- **Raw mode:** no waiting and instant answers, so it measures the crawler's own top speed.
+- **Polite mode:** the real rules (1 second between requests to a site, longer if it asks) and answers that take 20–200 ms. One site in ten asks for a 2-second wait and one in ten has its robots.txt down (so gets nothing), so the most politeness allows is 8,500 pages a second.
+
+| Download slots | Raw, pages/s | Polite, pages/s | Polite, share of the most allowed |
+|---:|---:|---:|---:|
+| 64 | 9,390 | 542 | 6.4% |
+| 256 | 10,219 | 2,162 | 25.4% |
+| 1,024 | 9,276 | 6,667 | 78.4% |
+
+- **Few slots: a simple limit.** A slot handles one page at a time and an answer takes about 0.11 s, so 64 slots can't do more than 64 ÷ 0.11 ≈ 580 pages a second (Little's law). Measured: 542.
+- **1,024 slots: politeness is the limit.** For 27 of the 30 seconds, a slot was free but no site was allowed yet. The rest of the gap is the rule itself: each site waits after its answer, not from when it was asked.
+
+### What profiling found
+
+CPU profiles (`perf`) of raw mode led to two fixes:
+
+| Build | Raw pages/s (64 / 256 / 1,024 slots) | CPU seconds a run |
+|---|---|---|
+| Start | 1,021 / 1,014 / 1,038 | ~325 |
+| 1. Compress pages in the readers, not the saver | 8,806 / 7,966 / 7,454 | ~650 |
+| 2. A faster compression library | 10,262 / 8,128 / 10,072 | ~320 |
+
+1. **The saver was the bottleneck.** One thread compressed every page into the web archive and ran at 100% while everything else idled, so speed was stuck near 1,000 pages a second whatever the slots. Each archived page is compressed on its own, so the 32 readers now do it in parallel. That made it 7–9× faster.
+2. **Compression was then 68% of all CPU time.** Switching to the `zlib-rs` library halved the CPU per page.
+
+What's left: the saver thread is the limit again in raw mode, mostly the time spent writing about 300 MB a second of files.
+
+### A real crawl
+
+The 163 sites in [`seeds/technical.txt`](seeds/technical.txt), 30,000 fetches, the default settings (512 slots, robots.txt obeyed), over a home connection:
+
+| | |
+|---|---|
+| Time | 5 min 4 s |
+| Answers | 25,198, about 83 a second |
+| Pages saved | 17,860 HTML pages, in a 596 MB web archive that `warcio` reads cleanly |
+| Websites | 33,406 found, pages fetched from 7,539; 157 of the 160 seed sites reached |
+| Skipped because robots.txt said no | 2,795 URLs |
+| Copies found | 425 exact, 1,136 near |
+| Timeouts | 4,779, 16% of fetches |
+| Peak memory, CPU | 540 MB, 97 s |
+
+What it shows:
+- **The network is the limit, not the computer.** It used 97 CPU seconds in 5 minutes.
+- **Following every link drifts off topic.** Only 26% of the saved pages came from the seed sites. Choosing which links to follow first is part 3's job.
+- **A bug it found:** the crawler kept connections open to reuse them for a site's next page. On the real web, reused connections often hung until the timeout. Side-by-side test crawls showed 15–22% timeouts with reuse and 5–7% without, while `curl` fetched the hung pages fine from the same machine. Now every fetch opens its own connection. Compared with the first real crawl, this one took 25% less time, gave up on 938 sites instead of 3,650, and used half the memory.
+- **Still open:** 16% of fetches time out at 512 slots, rising as the crawl reaches more sites, though `curl` fetches those pages fine. Ruled out so far: DNS, HTTP/2, bandwidth, the router, shared hosting and the sites themselves. Next is timing each stage of a fetch inside the crawler.
+
+## Using it
+
+Build once, with `cargo build --release`; the program is `mccrawl`.
+
+```sh
+# Crawl real sites. --contact goes into the User-Agent so site owners can reach you.
+mccrawl crawl --seeds seeds/technical.txt --budget 30000 --contact https://example.com/about-my-crawler
+
+# Serve the fake web, to point a crawl at it (prints a curl example)
+mccrawl mockweb --hosts 10000 --port 8080
+
+# Speed tests against the fake web
+mccrawl bench --mode raw --concurrency 64,256,1024
+mccrawl bench --mode polite
+
+# Check a crawl's web archive with an independent library
+uv run --with warcio python tests/warc_check.py ~/mccrawl-data/run-<id>
+```
+
+A crawl writes `crawl-NNNNN.warc.gz` (the pages), `pages.jsonl` (one row per fetch: title, text, links, fingerprints) and `report.json` (the numbers above) to `~/mccrawl-data/` unless `--out` says otherwise. Ctrl-C stops it gracefully and still saves everything; a second Ctrl-C quits at once. `--theme mocha` switches the colors.
+
 ## The plan
 
 ### Five parts
@@ -101,14 +177,14 @@ Each part gets its own design, plan and build.
 
 ```mermaid
 flowchart LR
-    SP1["1 · Core crawler<br/>fast and polite<br/>(in progress)"]:::wip
+    SP1["1 · Core crawler<br/>fast and polite<br/>(done)"]:::done
     SP2["2 · Scale out<br/>split the crawl across<br/>many machines"]
     SP3["3 · Smart crawling (ML)<br/>guess which links lead<br/>to good pages"]
     SP4["4 · JavaScript sites<br/>render pages that need<br/>a real browser"]
     SP5["5 · Search<br/>rate page quality, search<br/>the crawl by meaning"]
     SP1 --> SP2 --> SP3 --> SP4 --> SP5
 
-    classDef wip fill:#fff3cd,stroke:#d39e00,color:#000
+    classDef done fill:#d4edda,stroke:#28a745,color:#000
 ```
 
 ### Part 1, step by step
@@ -130,7 +206,7 @@ flowchart TD
     cli["12 · Command line"]:::done
     proof["13 · Test that proves<br/>it is polite"]:::done
     bench["14 · Speed tests<br/>+ finding slow spots"]:::done
-    real["15 · Real crawl of<br/>technical websites"]
+    real["15 · Real crawl of<br/>technical websites"]:::done
 
     urlnorm --> frontier
     dedup --> frontier
@@ -154,14 +230,13 @@ flowchart TD
 ```
 src/        the crawler's code, one file per box above
 tests/      the tests, one file per code file
+seeds/      the starting sites for the real crawl
 docs/       the full design and the step-by-step plan
 ```
 
 ## Running the tests
 
 ```sh
-cargo test                 # run every test
-cargo test --test dedup    # run one file's tests
+cargo test                     # run every test
+cargo test --test politeness   # one file: here, the proof that it stays polite
 ```
-
-Commands to actually crawl (`crawl`, `mockweb`, `bench`) come in step 12.

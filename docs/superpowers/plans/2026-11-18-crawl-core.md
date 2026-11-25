@@ -1318,6 +1318,7 @@ if __name__ == "__main__":
     | + LTO profile | 1,021 / 1,014 / 1,038 | 326 / 329 / 318 | 541 / 1,039 / 1,009 | 6.4 / 12.2 / 11.9 |
     | + fix 1 | 8,806 / 7,966 / 7,454 | 636 / 634 / 677 | | |
     | + fix 2 | 10,262 / 8,128 / 10,072 | 307 / 317 / 337 | 541 / 2,171 / 6,644 | 6.4 / 25.5 / 78.2 |
+    | + a fresh connection per fetch (step 15) | 9,390 / 10,219 / 9,276 | 329 / 358 / 378 | 542 / 2,162 / 6,667 | 6.4 / 25.4 / 78.4 |
 
     Raw numbers vary by up to ~20% between runs (fix 1 at 1,024 slots measured 7,257 to 9,025). Latency p50/p99 in polite mode stays 111 / 200 ms, the mock's own.
   - **Fix 1, `perf: compress WARC records in the parse pool`:** the store thread ran at 100% of one core (gzip level 6 of every record) while every other thread idled, so raw throughput was flat at ~1,000 pages/s. `StoreMsg::archived` now compresses each record on the parse thread; the store only appends. Mutation check: 12 of 13 caught; the survivor removes the flush before rotation, which `BufWriter`'s drop also does.
@@ -1325,7 +1326,7 @@ if __name__ == "__main__":
   - **The shape:** low concurrency is bound by Little's law (64 slots ÷ 111 ms ≈ 580 pages/s; measured 541), 1,024 slots by politeness itself (a slot was free with no site allowed for 25 of the 30 s). The rest of the gap to 8,500 is the formula: each host waits after its response (~1.11 s a page), Crawl-delay hosts wait 2 s, and 429 hosts back off.
   - **Next limits (not fixed here):**
     - **Store:** the store thread is still the raw-mode limit, about two thirds of it kernel time writing ~300 MB/s of files. Upgrade path: serialize rows in the parse pool too, or split the WARC and JSONL writers.
-    - **Memory:** peak 2.5–3 GB, with ~2.3M URLs queued at the end; the in-memory frontier is the likely main part (not measured apart). SP2 moves the frontier to disk.
+    - **Memory:** peak 2.5–3 GB. It turned out to be mostly idle pooled connections: with a fresh connection per fetch (step 15) the same runs peak at 0.8–1.1 GB.
 
 ### Task 15: Real crawl, README, wrap-up
 
@@ -1344,6 +1345,23 @@ if __name__ == "__main__":
   - How to run (`crawl`, `bench`, tests).
   - Roadmap (sub-projects 2–5).
 - [ ] **Step 4:** Final checks: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Mark sub-project 1 done in `STATE.md` and save this plan to `docs/superpowers/plans/2026-11-18-crawl-core.md`. Commit: `docs: README with benchmarks; crawl core complete`.
+
+  **As built:**
+  - **Seeds:** 163 URLs on 160 hosts in 8 groups, reviewed before any crawl. GitHub, X/Twitter, Reddit, Medium-only blogs, Stack Overflow, Wikipedia and arXiv were left out on purpose (JavaScript, paywalls, blocking robots.txt, size or PDFs).
+  - **Contact:** the GitHub repo page, checked public first.
+  - **The first real crawl found a bug:**
+    - 30,000 fetches took 6 min 45 s with 15% timeouts, and 3,650 hosts were given up, sqlite.org, gnu.org and martinfowler.com among them.
+    - curl fetched 270 of 271 timed-out pages fine, so the fault was the crawler.
+    - A/B crawls (3,000 fetches, 128 slots) found it: reused idle connections gave 15.2–21.7% timeouts (6 runs), against 4.7–7.3% (4 runs) with a fresh connection per fetch.
+    - Ruled out one at a time: DNS (system resolver vs hickory, with and without reuse), HTTP/2 (HTTP/1.1 only), bandwidth (fewer slots was worse), the router (1,500 held connections; 300 connects/s of churn), shared hosting IPs, the sites (curl).
+    - `fetch.rs` now keeps no idle connections; `every_fetch_opens_its_own_connection` (a server that answers once per connection, then goes silent) fails if reuse comes back.
+    - The mock bench is unchanged, and its peak memory fell from ~2.6 to ~0.9 GB.
+  - **The crawl that counts** (fixed build, same settings): 5 min 4 s; 25,198 answers (83/s); 17,860 pages archived in a 596 MB WARC that `warc_check.py` passes (137 truncated); 33,406 hosts found, pages from 7,539, 157 of 160 seed hosts; 2,795 URLs disallowed; 425 exact and 1,136 near duplicates; 938 hosts given up (3,650 before); peak 540 MB, 97 CPU s.
+  - **What it shows:**
+    - It is network-bound.
+    - Breadth-first drifts off topic: only 26% of archived pages are on seed hosts. That is sub-project 3's job.
+  - **Open:** 16% of fetches still time out at 512 slots, rising from ~9% in the first minute to ~20%, though curl fetches those pages fine. The A/B crawls covered only about a minute each. Next would be per-stage timing inside a fetch (connect, TLS, first byte, body).
+  - **Kept outside the repo:** bench and crawl outputs (`~/mccrawl-data/`).
 
 ---
 
