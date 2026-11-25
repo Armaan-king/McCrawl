@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
+clap = { version = "4.6.8", features = ["derive"] }
 flate2 = "1.1.11"
+libc = "0.2.191"
 lol_html = "3.0.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "gzip", "brotli", "zstd", "hickory-dns"] }
 serde = { version = "1.0.229", features = ["derive"] }

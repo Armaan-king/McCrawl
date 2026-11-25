@@ -7,8 +7,8 @@ use axum::{
     response::IntoResponse,
 };
 use flate2::read::MultiGzDecoder;
-use mccrawl::crawler::{BoxError, CrawlConfig, run};
-use mccrawl::metrics::Report;
+use mccrawl::crawler::{BoxError, CrawlConfig, parse_seeds, run, user_agent};
+use mccrawl::metrics::{Progress, Report};
 use mccrawl::mockweb::{self, MockConfig};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use url::Url;
 
 /// No test crawl should take this long; past it, the crawl is reported as hung.
@@ -40,9 +42,29 @@ fn config(seeds: Vec<Url>, out: &Path, resolve: Vec<(String, SocketAddr)>) -> Cr
         user_agent: "McCrawl/0.1 (+test)".into(),
         resolve,
         robots_retry: Duration::from_millis(50),
-        progress_every: None,
         ..CrawlConfig::new(seeds, out.to_path_buf())
     }
+}
+
+/// A progress channel for a crawl, and a task that collects every snapshot sent on it.
+fn progress() -> (watch::Sender<Progress>, JoinHandle<Vec<Progress>>) {
+    let (tx, mut rx) = watch::channel(Progress::default());
+    let all = tokio::spawn(async move {
+        let mut all = Vec::new();
+        while rx.changed().await.is_ok() {
+            all.push(rx.borrow_and_update().clone());
+        }
+        all
+    });
+    (tx, all)
+}
+
+/// The snapshots, once `run` has returned. If it kept the sender, this fails instead of hanging.
+async fn snapshots(all: JoinHandle<Vec<Progress>>) -> Vec<Progress> {
+    tokio::time::timeout(Duration::from_secs(1), all)
+        .await
+        .expect("the progress channel stayed open after run returned")
+        .unwrap()
 }
 
 /// `run` with no shutdown signal, failing the test instead of hanging if the crawl never ends.
@@ -655,9 +677,10 @@ async fn waits_between_requests_to_a_host_and_counts_the_wait() {
     })
     .await;
     let out = out_dir("wait");
+    let (tx, all) = progress();
     let cfg = CrawlConfig {
         min_delay: Duration::from_millis(150),
-        progress_every: Some(Duration::from_millis(200)),
+        progress: Some(tx),
         ..config(
             vec![site.url("a.test", "/")],
             &out,
@@ -683,6 +706,29 @@ async fn waits_between_requests_to_a_host_and_counts_the_wait() {
         r.idle_slot_secs,
         r.wall_secs
     );
+    // A snapshot every 250 ms of the ~1 s crawl, counting up; then one saying the output is
+    // being saved, with the final counts; then the channel closes.
+    let all = snapshots(all).await;
+    let (last, during) = all.split_last().expect("snapshots");
+    assert!(during.len() >= 2, "{} snapshots", during.len());
+    assert!(
+        during[0].elapsed >= Duration::from_millis(240),
+        "{:?}",
+        during[0]
+    );
+    for w in during.windows(2) {
+        let gap = w[1].elapsed.saturating_sub(w[0].elapsed);
+        assert!(gap >= Duration::from_millis(200), "{gap:?} apart");
+        assert!(w[1].pages >= w[0].pages && w[1].bytes >= w[0].bytes);
+    }
+    for p in &all {
+        assert_eq!(p.status.values().sum::<u64>(), p.pages, "{p:?}");
+        assert!(p.pages <= r.pages && p.in_flight <= 1, "{p:?}");
+        assert_eq!((p.errors, p.frontier.hosts, p.stopping), (0, 1, false));
+    }
+    assert!(during.iter().all(|p| !p.saving));
+    assert!(last.saving && last.in_flight == 0, "{last:?}");
+    assert_eq!((last.pages, last.bytes), (r.pages, r.bytes));
     std::fs::remove_dir_all(&out).ok();
 }
 
@@ -723,8 +769,10 @@ async fn shutdown_lets_fetches_in_flight_finish_then_stops() {
 async fn grace_period_abandons_fetches_that_never_finish() {
     let site = serve(|_, _, _| Reply::new(200).delay(Duration::from_secs(3600))).await;
     let out = out_dir("grace");
+    let (tx, all) = progress();
     let cfg = CrawlConfig {
-        grace: Duration::from_millis(300),
+        grace: Duration::from_millis(800),
+        progress: Some(tx),
         ..config(
             vec![site.url("a.test", "/")],
             &out,
@@ -739,11 +787,25 @@ async fn grace_period_abandons_fetches_that_never_finish() {
         .unwrap();
     let took = t.elapsed();
     assert!(
-        took >= Duration::from_millis(500) && took < Duration::from_secs(3),
+        took >= Duration::from_millis(1000) && took < Duration::from_secs(3),
         "{took:?}"
     );
     assert_eq!(site.hits("a.test", "/robots.txt"), 1);
     assert_eq!((r.pages, r.robots_fetches, r.store.records), (0, 0, 0));
+    // During the grace period the snapshots say so, with the hung fetch still in flight; the
+    // last one, saving, still counts it (it is abandoned after).
+    let all = snapshots(all).await;
+    let (last, during) = all.split_last().expect("snapshots");
+    assert!(
+        during
+            .iter()
+            .any(|p| p.stopping && !p.saving && p.in_flight == 1),
+        "{during:?}"
+    );
+    assert!(
+        last.saving && last.stopping && last.in_flight == 1 && last.pages == 0,
+        "{last:?}"
+    );
     assert!(out.join("report.json").exists());
     std::fs::remove_dir_all(&out).ok();
 }
@@ -850,20 +912,6 @@ async fn rejects_bad_settings_before_touching_disk_or_network() {
             },
         ),
         (
-            "progress 0",
-            CrawlConfig {
-                progress_every: Some(Duration::ZERO),
-                ..base()
-            },
-        ),
-        (
-            "progress",
-            CrawlConfig {
-                progress_every: Some(past_day),
-                ..base()
-            },
-        ),
-        (
             "user agent",
             CrawlConfig {
                 user_agent: "bad\nagent".into(),
@@ -883,7 +931,6 @@ async fn rejects_bad_settings_before_touching_disk_or_network() {
         min_delay: day,
         robots_retry: day,
         grace: day,
-        progress_every: Some(day),
         ..base()
     };
     let r = crawl(edge).await.unwrap();
@@ -922,4 +969,80 @@ async fn an_empty_crawl_finishes_and_its_output_is_never_overwritten() {
     assert_eq!(io.kind(), io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read(out.join("report.json")).unwrap(), b"keep");
     std::fs::remove_dir_all(&out).ok();
+}
+
+#[test]
+fn a_seeds_file_skips_comments_and_blanks_and_warns_about_other_lines() {
+    let long = format!("https://a.com/{}", "x".repeat(3000)); // over the URL length limit
+    let text = format!(
+        "\u{feff}# docs\n\nhttps://Docs.Rust-lang.org/book/#intro   # the book\n  http://a.com:80/x?  \n\
+         ftp://files.example.com/\nexample.com\nhttps://b.com/ trailing words\n\
+         https://c.com/\t#tab comment\r\n{long}\nhttps://d.com/ ##\n#https://e.com/\n"
+    );
+    let (seeds, warnings) = parse_seeds(&text);
+    let seeds: Vec<&str> = seeds.iter().map(Url::as_str).collect();
+    assert_eq!(
+        seeds,
+        [
+            "https://docs.rust-lang.org/book/",
+            "http://a.com/x",
+            "https://c.com/",
+            "https://d.com/"
+        ]
+    );
+    let lines: Vec<&str> = warnings
+        .iter()
+        .map(|w| w.split(':').next().unwrap())
+        .collect();
+    assert_eq!(lines, ["line 5", "line 6", "line 7", "line 9"]);
+    assert!(
+        warnings[0].ends_with(" ftp://files.example.com/"),
+        "{}",
+        warnings[0]
+    );
+    assert!(warnings[2].ends_with(" https://b.com/ trailing words"));
+    // A long line is cut to 100 characters.
+    let cut = &warnings[3];
+    assert!(cut.ends_with(&format!("{}…", &long[..100])), "{cut}");
+    assert!(cut.chars().count() < 160);
+    assert_eq!(parse_seeds(""), (vec![], vec![]));
+    assert_eq!(parse_seeds("\n  \n# only comments\n"), (vec![], vec![]));
+}
+
+#[test]
+fn the_user_agent_needs_a_contact_site_owners_can_use() {
+    assert_eq!(
+        user_agent("https://example.com/bot").unwrap(),
+        "McCrawl/0.1 (+https://example.com/bot)"
+    );
+    assert_eq!(
+        user_agent("crawler@example.com").unwrap(),
+        "McCrawl/0.1 (+crawler@example.com)"
+    );
+    assert!(user_agent("http://example.com").is_ok());
+    let edge = format!("https://example.com/{}", "a".repeat(236));
+    assert_eq!(edge.len(), 256);
+    assert!(user_agent(&edge).is_ok(), "256 bytes is the limit");
+    let too_long = edge.clone() + "a";
+    let bad = [
+        "",
+        "example.com",
+        "ftp://example.com/",
+        "https://",
+        "mailto:me",
+        "me@localhost",
+        "@example.com",
+        "me@.com",
+        "me@example.com.",
+        "a@b@c.com",
+        "https://example.com/(x)",
+        "https://example.com/a\\b",
+        "https://exam ple.com/",
+        "me@exämple.com",
+        "https://example.com/\n",
+        &too_long,
+    ];
+    for contact in bad {
+        assert!(user_agent(contact).is_err(), "{contact:?} accepted");
+    }
 }

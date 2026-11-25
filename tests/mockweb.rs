@@ -415,6 +415,19 @@ async fn responses_wait_the_latency_but_hits_record_arrival() {
     let t = Instant::now();
     assert_eq!(get(&web, "nowhere.org", "/").await.0, 404);
     assert!(t.elapsed() < Duration::from_millis(150));
+    // The widest range doesn't overflow: the request is logged and then just waits.
+    let cfg = MockConfig {
+        hosts: 1,
+        latency_ms: (0, u64::MAX),
+        ..Default::default()
+    };
+    let web = mockweb::start(cfg, 0).await.unwrap();
+    let wait = tokio::time::timeout(Duration::from_millis(300), get(&web, "h0.mock", "/p/1"));
+    assert!(
+        wait.await.is_err(),
+        "answered or dropped instead of waiting"
+    );
+    assert_eq!(web.hits().len(), 1);
 }
 
 #[tokio::test]

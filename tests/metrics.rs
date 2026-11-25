@@ -300,13 +300,17 @@ fn an_empty_or_instant_crawl_reports_zeros_not_nulls() {
 }
 
 #[test]
-fn progress_line_is_one_line_with_the_key_numbers() {
+fn progress_snapshot_has_every_count_and_only_recent_latencies() {
     let mut t = Tally::default();
-    for _ in 0..30 {
-        t.page(200, 1 << 20, ms(1));
+    // Old, slow responses, then the last 1,024: 1..=1024 ms, newest first (so unsorted).
+    for _ in 0..976 {
+        t.page(200, 1, ms(60_000));
+    }
+    for v in (1..=1024).rev() {
+        t.page(if v % 2 == 0 { 200 } else { 404 }, 2, ms(v));
     }
     t.errors.insert("timeout", 2);
-    t.errors.insert("other", 1);
+    t.errors.insert("connect", 3);
     t.retries = 4;
     let f = FrontierStats {
         hosts: 12,
@@ -314,13 +318,50 @@ fn progress_line_is_one_line_with_the_key_numbers() {
         queued: 456,
         ..Default::default()
     };
+    let p = t.progress(ms(1500), 7, f, true);
     assert_eq!(
-        t.progress_line(Duration::from_secs(10), &f),
-        "   10.0s  pages 30 (3.0/s)  30.0 MiB  errors 3  retries 4  queued 456  hosts 12 (3 dead)"
+        (
+            p.elapsed,
+            p.pages,
+            p.errors,
+            p.bytes,
+            p.retries,
+            p.in_flight,
+            p.stopping
+        ),
+        (ms(1500), 2000, 5, 976 + 2048, 4, 7, true)
     );
-    let instant = t.progress_line(Duration::ZERO, &f);
-    assert!(
-        instant.contains("(0.0/s)") && !instant.contains('\n'),
-        "{instant}"
+    assert_eq!(p.status, BTreeMap::from([(200, 976 + 512), (404, 512)]));
+    // Only the crawler's last snapshot is marked saving.
+    assert!(!p.saving);
+    assert_eq!(
+        (p.frontier.hosts, p.frontier.dead_hosts, p.frontier.queued),
+        (12, 3, 456)
+    );
+    // Over the last 1,024 responses: not one of the 60 s ones (1,025 would take one in, and
+    // 1,023 would give p99 = 1013).
+    assert_eq!((p.recent_p50_ms, p.recent_p99_ms), (512, 1014));
+    // The snapshot leaves the tally as it was.
+    assert_eq!(
+        (
+            t.latencies_ms.len(),
+            t.latencies_ms[976],
+            t.latencies_ms[1999]
+        ),
+        (2000, 1024, 1)
+    );
+    // Fewer responses than the window: all of them. None: zeros.
+    let mut few = Tally::default();
+    few.page(200, 0, ms(9));
+    few.page(200, 0, ms(5));
+    let p = few.progress(ms(1), 0, FrontierStats::default(), false);
+    assert_eq!(
+        (p.recent_p50_ms, p.recent_p99_ms, p.stopping),
+        (5, 9, false)
+    );
+    let p = Tally::default().progress(Duration::ZERO, 0, FrontierStats::default(), false);
+    assert_eq!(
+        (p.pages, p.errors, p.recent_p50_ms, p.recent_p99_ms),
+        (0, 0, 0, 0)
     );
 }

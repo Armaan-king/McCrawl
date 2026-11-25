@@ -1163,6 +1163,33 @@ mod tests {
   - `main` returns `Result<(), Box<dyn Error>>`, on a `#[tokio::main]` multi-thread runtime.
 
 - [ ] **Step 1:** Implement, and add `pub fn parse_seeds(text: &str) -> Vec<Url>` in `src/crawler.rs` (so `tests/` can reach it) with a test (comments, blanks, an invalid line).
+
+  **As built** (tests in `tests/cli.rs` and `tests/ui.rs`, plus additions to `tests/crawler.rs`, `tests/metrics.rs` and `tests/mockweb.rs`):
+  - **Changes from the plan:**
+    - **Terminal output** is its own module, `src/ui.rs`, rendering to strings so it can be tested:
+      - a start banner, and a borderless live panel redrawn in place (pages bar, rate graph, data and latency, slots, hosts, status classes, errors, CPU and memory), then an end summary;
+      - Monokai Pro by default, or Catppuccin Mocha with `--theme mocha`;
+      - when stderr isn't a terminal, `NO_COLOR` is set or `TERM=dumb`, one plain line every 5 s instead;
+      - a window too small for the panel gets a one-line view.
+    - **The crawler no longer prints.** `CrawlConfig::progress_every` became `progress: Option<watch::Sender<Progress>>`, sent every 250 ms. A last snapshot is marked `saving`: writing the queued pages can take seconds, and the panel says so instead of looking hung. `Tally::progress_line` became `Tally::progress`, with latency percentiles over the last 1,024 responses.
+    - **In `crawler.rs`:**
+      - `parse_seeds` also returns warnings with line numbers. It ignores a BOM, takes a comment after the URL, and cuts long lines to 100 characters.
+      - `user_agent(contact)` checks the contact: an http(s) URL or an email address, ASCII, no `()\`, at most 256 bytes.
+    - **Exit codes:** `main` returns an `ExitCode`, with `error: …` and 1 on failure (2 for usage errors, from clap).
+    - **Signals:**
+      - SIGTERM stops a crawl the way Ctrl-C does, and a second signal quits at once with 130.
+      - The handlers are registered at start, so there is no moment when the signal's default would kill the process mid-write.
+    - **Open files:** the soft limit is raised to the hard one at start, so high concurrency doesn't need `ulimit -n`.
+    - **`bench`:**
+      - each run goes in `<i>-c<N>/`;
+      - per-run CPU, and peak RSS reset through `/proc/self/clear_refs`;
+      - `bench.json` records the settings;
+      - a `bench.json` already in `--out` is refused before running;
+      - Ctrl-C ends the current run and skips the rest.
+    - **`mockweb --latency-ms`** takes `LOW..HIGH` or one number, at most 60 s. The mock's own latency math overflowed on the widest range, which is fixed in `mockweb.rs` too.
+  - **Checks:** 175 tests in all; mutations: step 12 146/150 (metrics 11/11, crawler additions 29/29, ui 68/69, main 38/41; the 4 left change nothing visible: a CPU clamp the display also does, and per-run CPU, per-run peak RSS and the live view's final wait, which need a real terminal or separate processes to see).
+    - **Smoke test** (release build, 2,000 hosts, 256 slots, no `ulimit` needed): 20,000 pages at 827 pages/s, 48.7% of the 1,700 pages/s politeness ceiling, 0 errors.
+    - **Checked by hand in a pseudo-terminal (`script`):** the live panel, the one-line view (12 rows, and 50 columns), the spinner while saving, and the cursor and wrapping restored.
 - [ ] **Step 2: Smoke test.** Run `ulimit -n 65536 && cargo run --release -- bench --hosts 2000 --pages 20000 --mode polite --concurrency 256`. It should finish and print the table.
 - [ ] **Step 3:** Update `STATE.md`. Commit: `feat(cli): crawl, mockweb and bench subcommands`.
 

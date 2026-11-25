@@ -1,5 +1,6 @@
 //! Crawl statistics. The scheduler is the only owner of a `Tally`, so the counters are plain
-//! fields with no atomics; `report` turns it into the `report.json` summary at the end.
+//! fields with no atomics; `progress` snapshots it for the live display, and `report` turns it
+//! into the `report.json` summary at the end.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -88,21 +89,59 @@ impl Tally {
         }
     }
 
-    /// One line for stderr while the crawl runs.
-    pub fn progress_line(&self, wall: Duration, f: &FrontierStats) -> String {
-        format!(
-            "{:7.1}s  pages {} ({:.1}/s)  {:.1} MiB  errors {}  retries {}  queued {}  hosts {} ({} dead)",
-            wall.as_secs_f64(),
-            self.pages,
-            per_sec(self.pages, wall),
-            self.bytes as f64 / (1 << 20) as f64,
-            self.errors.values().sum::<u64>(),
-            self.retries,
-            f.queued,
-            f.hosts,
-            f.dead_hosts,
-        )
+    /// A snapshot for the live display. Latency percentiles are over the last `RECENT`
+    /// responses, so they follow what the crawl is doing now and cost little to compute.
+    pub fn progress(
+        &self,
+        elapsed: Duration,
+        in_flight: usize,
+        frontier: FrontierStats,
+        stopping: bool,
+    ) -> Progress {
+        let from = self.latencies_ms.len().saturating_sub(RECENT);
+        let mut recent = self.latencies_ms[from..].to_vec();
+        recent.sort_unstable();
+        Progress {
+            elapsed,
+            pages: self.pages,
+            errors: self.errors.values().sum(),
+            bytes: self.bytes,
+            status: self.status.clone(),
+            retries: self.retries,
+            in_flight,
+            recent_p50_ms: percentile(&recent, 0.5),
+            recent_p99_ms: percentile(&recent, 0.99),
+            frontier,
+            stopping,
+            saving: false,
+        }
     }
+}
+
+/// Responses the live latency percentiles are taken over.
+pub const RECENT: usize = 1024;
+
+/// A running crawl as the live display sees it, sent a few times a second.
+#[derive(Clone, Debug, Default)]
+pub struct Progress {
+    pub elapsed: Duration,
+    /// Page fetches that got a response, whatever the status.
+    pub pages: u64,
+    /// Page fetches that failed without a response.
+    pub errors: u64,
+    pub bytes: u64,
+    pub status: BTreeMap<u16, u64>,
+    pub retries: u64,
+    /// Fetches in flight, robots.txt included.
+    pub in_flight: usize,
+    pub recent_p50_ms: u32,
+    pub recent_p99_ms: u32,
+    pub frontier: FrontierStats,
+    /// The shutdown signal fired: nothing new starts, and the fetches in flight are finishing.
+    pub stopping: bool,
+    /// The last snapshot: fetching is over, and the parse pool and the store are writing what
+    /// is left, which can take seconds.
+    pub saving: bool,
 }
 
 /// 0 for a zero duration rather than infinity, which JSON can't hold (serde_json writes null).

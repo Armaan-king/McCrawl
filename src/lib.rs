@@ -7,4 +7,5 @@ pub mod mockweb;
 pub mod parse;
 pub mod robots;
 pub mod store;
+pub mod ui;
 pub mod urlnorm;

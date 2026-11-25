@@ -65,7 +65,8 @@ There is one process, one tokio multi-threaded runtime and one binary crate.
 
 | File | Responsibility | Depends on |
 |---|---|---|
-| `src/main.rs` | CLI only (`crawl`, `mockweb`, `bench`) | `crawler`, `mockweb` |
+| `src/main.rs` | CLI (`crawl`, `mockweb`, `bench`), stop signals | `crawler`, `mockweb`, `ui` |
+| `src/ui.rs` | Terminal output: Monokai Pro (default) or Catppuccin Mocha; the start banner; a borderless live panel redrawn in place, which becomes a plain line every 5 s when the output isn't a terminal or `NO_COLOR` is set; the end summary; the Markdown bench table | `metrics`, `clap`, `libc` |
 | `src/lib.rs` | `pub mod` declarations, so integration tests can run real crawls | all modules |
 | `src/crawler.rs` | `CrawlConfig` + `run()`: the scheduler task that owns the frontier, the fetch tasks, the parse pool, the store wiring, graceful shutdown, `report.json` | all modules |
 | `src/urlnorm.rs` | `normalize(base, href) -> Option<Url>`: resolve relative links, lowercase scheme/host, drop fragment and default port, reject non-http(s), enforce max length 2048, and reject paths where any segment appears more than 3 times (a trap signature like `/a/b/a/b/a/b/a/`). `host_key(&Url) -> String` (hostname) | `url` |
@@ -75,7 +76,7 @@ There is one process, one tokio multi-threaded runtime and one binary crate.
 | `src/parse.rs` | `parse(url, body) -> Parsed { title, text, canonical, noindex, nofollow, links: Vec<Link{url, anchor, nofollow}> }`. Single-pass **streaming** parse with `lol_html` element/text handlers (`a[href]` + anchor text, `title`, `link[rel=canonical]`, `meta[name=robots]`, visible text with `script`/`style` skipped). No DOM is built. Boilerplate removal and main-content extraction are left to SP5, which reads the raw HTML from WARC | `lol_html`, `urlnorm` |
 | `src/dedup.rs` | Seen-URL `HashSet<u64>` (xxh3 of canonical URL); exact body hash (xxh3); 64-bit SimHash over word 3-shingles; `hamming(a, b)`; near-duplicate if distance ≤ 3. `NearDupIndex` uses Manku et al.'s (Google, 2007) block trick, not a linear scan: split the fingerprint into 4 × 16-bit blocks and keep 4 hash maps from block value to fingerprints. By pigeonhole, any fingerprint within distance ≤ 3 matches one block exactly, so only those buckets are checked | `xxhash-rust` |
 | `src/store.rs` | Single writer task. WARC (`warcinfo` + `response` records, each record its own gzip member, files rotate at 1 GB) and `pages.jsonl`; flushed whenever its queue runs empty | `flate2`, `serde_json` |
-| `src/metrics.rs` | Counters owned by the scheduler (plain fields, no atomics), latency percentiles, CPU time and peak RSS from `/proc`, a periodic progress line, the final report | `serde` |
+| `src/metrics.rs` | Counters owned by the scheduler (plain fields, no atomics), latency percentiles, CPU time and peak RSS from `/proc`, a `Progress` snapshot for the live display, the final report | `serde` |
 | `src/mockweb.rs` | Synthetic web. Hosts `h{i}.mock`, deterministic pages from `hash(host, path)`, configurable latency, robots variants (disallow paths, crawl-delay, 5xx robots), injected 429s, request log `(host, path, time)` | `axum`, `tokio` |
 
 Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that handles only `*.mock` names.
@@ -153,25 +154,26 @@ Mock hostnames resolve to 127.0.0.1 through a custom `reqwest` DNS resolver that
 
 **Rust error types:**
 - A std-only `FetchError` enum classifies failures.
-- `main` returns `Result<(), Box<dyn Error>>`.
+- `main` prints `error: …` and exits with 1 (2 for usage errors, 130 for a forced quit).
 - A per-URL error is recorded and the crawl continues; it never panics the crawl.
 
 ## 9. Lifecycle, CLI and output
 
 ```
-mccrawl crawl   --seeds seeds/technical.txt --out ~/mccrawl-data/run-001 --budget 100000 \
-                --concurrency 512 --per-host-cap 500 [--min-delay-ms 1000] [--user-agent ...]
-mccrawl mockweb --hosts 10000 --port 8080 [--latency-ms 20..200]
-mccrawl bench   --hosts 10000 --pages 200000 --mode polite|raw [--concurrency 64,256,1024]
+mccrawl crawl   --seeds seeds/technical.txt --contact <url or email> [--out ~/mccrawl-data/run-001] \
+                [--budget 100000] [--concurrency 512] [--per-host-cap 500] [--min-delay-ms 1000]
+mccrawl mockweb [--hosts 10000] [--port 8080] [--latency-ms 20..200]
+mccrawl bench   [--hosts 10000] [--pages 200000] [--mode polite|raw] [--concurrency 64,256,1024]
+every command:  [--theme monokai|mocha]
 ```
 
 **Stopping:**
 - The crawl stops when the budget is reached, the frontier is empty with nothing in flight, or Ctrl-C is pressed.
-- On Ctrl-C it stops handing out URLs, waits up to 10 s for in-flight fetches, flushes, then writes `report.json`.
+- On Ctrl-C (or SIGTERM) it stops handing out URLs, waits up to 10 s for in-flight fetches, flushes, then writes `report.json`. A second signal quits at once (exit code 130).
 
 **Crash safety:** Output is append-only. Each WARC record is its own gzip member and each JSONL row is one line, and both are flushed whenever the store's queue runs empty, so a crash leaves all earlier output readable. Output files are created new, never overwritten.
 
-**User agent:** `McCrawl/0.1 (+<contact URL>)`. The author supplies the contact URL when `fetch.rs` is built.
+**User agent:** `McCrawl/0.1 (+<contact>)`, where the contact is the required `--contact` flag: an http(s) URL or an email address.
 
 **Output files:**
 - `crawl-NNNNN.warc.gz`. Response records store the decoded body, so the stored HTTP header block has no `Content-Encoding` for a decoded body (reqwest removes it when it decodes; one still present is true of the stored bytes and is kept), drops `Transfer-Encoding`, and sets `Content-Length` to the stored body length.

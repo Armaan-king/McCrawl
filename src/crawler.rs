@@ -8,7 +8,7 @@ use crate::{
     dedup::{body_hash, simhash},
     fetch::{FetchConfig, FetchError, FetchResponse, Fetcher},
     frontier::{Frontier, FrontierConfig, HostId, Job, Next, Outcome, UrlEntry},
-    metrics::{Report, Tally},
+    metrics::{Progress, Report, Tally},
     parse::parse,
     robots::RobotsRules,
     store::{self, LinkOut, PageRecord, Store, StoreMsg, WarcPayload},
@@ -27,10 +27,17 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{sync::mpsc, task::JoinSet, time::sleep_until};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+    time::{MissedTickBehavior, sleep_until},
+};
 use url::Url;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// How often `CrawlConfig::progress` gets a snapshot.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -63,8 +70,9 @@ pub struct CrawlConfig {
     pub resolve: Vec<(String, SocketAddr)>,
     pub max_body: usize,
     pub robots_retry: Duration,
-    /// How often to print a progress line to stderr; `None` for never.
-    pub progress_every: Option<Duration>,
+    /// Gets a snapshot every `PROGRESS_EVERY`. `run` drops it when it returns, which closes
+    /// the channel.
+    pub progress: Option<watch::Sender<Progress>>,
     /// After the shutdown signal, how long fetches in flight get to finish.
     pub grace: Duration,
     /// Start a new WARC file once the current one reaches this many (compressed) bytes.
@@ -86,7 +94,7 @@ impl CrawlConfig {
             resolve: Vec::new(),
             max_body: 2 << 20,
             robots_retry: Duration::from_secs(60),
-            progress_every: Some(Duration::from_secs(5)),
+            progress: None,
             grace: Duration::from_secs(10),
             warc_rotate_at: 1 << 30,
         }
@@ -195,7 +203,8 @@ pub async fn run(cfg: CrawlConfig, shutdown: impl Future<Output = ()>) -> Result
     // Since when a slot has been free but no host allowed (the cost of politeness).
     let mut blocked_since: Option<Instant> = None;
     let mut fatal: Option<BoxError> = None;
-    let mut progress = tokio::time::interval(cfg.progress_every.unwrap_or(DAY));
+    let mut progress = tokio::time::interval(PROGRESS_EVERY);
+    progress.set_missed_tick_behavior(MissedTickBehavior::Delay);
     progress.reset(); // the first tick would fire at once
     let mut shutdown = pin!(shutdown);
 
@@ -257,13 +266,31 @@ pub async fn run(cfg: CrawlConfig, shutdown: impl Future<Output = ()>) -> Result
                 }
             }
             () = &mut shutdown, if stop_at.is_none() => stop_at = Some(Instant::now() + cfg.grace),
-            _ = progress.tick(), if cfg.progress_every.is_some() => {
-                eprintln!("{}", tally.progress_line(started.elapsed(), &frontier.stats()));
+            _ = progress.tick(), if cfg.progress.is_some() => {
+                if let Some(tx) = &cfg.progress {
+                    let stopping = stop_at.is_some();
+                    let snap = tally.progress(started.elapsed(), inflight.len(), frontier.stats(), stopping);
+                    tx.send_replace(snap);
+                }
             }
         }
     }
     if let Some(t) = blocked_since {
         tally.idle_slot += t.elapsed();
+    }
+    // Fetching is over; say so while the parse pool and the store finish writing.
+    if let Some(tx) = &cfg.progress {
+        let stopping = stop_at.is_some();
+        let snap = tally.progress(
+            started.elapsed(),
+            inflight.len(),
+            frontier.stats(),
+            stopping,
+        );
+        tx.send_replace(Progress {
+            saving: true,
+            ..snap
+        });
     }
 
     // Teardown: cancel what is still fetching (only after the grace period or an error), stop
@@ -299,13 +326,60 @@ fn validate(cfg: &CrawlConfig) -> Result<(), BoxError> {
     if too_long(cfg.min_delay) || too_long(cfg.robots_retry) || too_long(cfg.grace) {
         return Err("min_delay, robots_retry and grace must be at most 24 h".into());
     }
-    if cfg
-        .progress_every
-        .is_some_and(|d| d.is_zero() || too_long(d))
-    {
-        return Err("progress_every must be above 0 and at most 24 h".into());
-    }
     Ok(())
+}
+
+/// Seed URLs from a seeds file: one URL per line, normalized. Blank lines and `#` comments are
+/// skipped, and a comment may follow the URL. Every other line gives a warning instead.
+pub fn parse_seeds(text: &str) -> (Vec<Url>, Vec<String>) {
+    let (mut seeds, mut warnings) = (Vec::new(), Vec::new());
+    for (i, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+        let mut words = line.split_whitespace();
+        let Some(first) = words.next().filter(|w| !w.starts_with('#')) else {
+            continue;
+        };
+        let url = Url::parse(first).ok().and_then(|u| normalize(&u, first));
+        match url {
+            Some(url) if words.next().is_none_or(|w| w.starts_with('#')) => seeds.push(url),
+            _ => {
+                // A pasted binary or minified file mustn't flood the terminal.
+                let line = line.trim();
+                let shown: String = line.chars().take(100).collect();
+                let more = if shown.len() < line.len() { "…" } else { "" };
+                warnings.push(format!(
+                    "line {}: skipped, not one http(s) URL: {shown}{more}",
+                    i + 1
+                ));
+            }
+        }
+    }
+    (seeds, warnings)
+}
+
+/// The User-Agent `McCrawl/0.1 (+contact)`, which tells site owners who runs the crawl. The
+/// contact must be an http(s) URL or an email address, in plain ASCII.
+pub fn user_agent(contact: &str) -> Result<String, BoxError> {
+    // Parentheses or a backslash would end or escape the User-Agent comment early.
+    let printable = contact
+        .bytes()
+        .all(|b| b.is_ascii_graphic() && !b"()\\".contains(&b));
+    // An http(s) URL always has a host: the parser refuses one without.
+    let url = Url::parse(contact).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+    let email = contact.split_once('@').is_some_and(|(user, domain)| {
+        !user.is_empty()
+            && !domain.contains('@')
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+    });
+    if contact.len() > 256 || !printable || !(url || email) {
+        return Err(
+            "the contact must be an http(s) URL or an email address in plain ASCII, \
+             e.g. https://example.com/crawler or crawler@example.com"
+                .into(),
+        );
+    }
+    Ok(format!("McCrawl/0.1 (+{contact})"))
 }
 
 async fn fetch(ctx: Arc<Ctx>, job: Job) -> Done {

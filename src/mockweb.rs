@@ -321,5 +321,7 @@ fn page_number(path: &str) -> Option<u32> {
 
 fn latency_ms(cfg: &MockConfig, host: u32, path: &str) -> u64 {
     let (lo, hi) = cfg.latency_ms;
-    lo + xxh3_64_with_seed(path.as_bytes(), u64::from(host)) % (hi.saturating_sub(lo) + 1)
+    // Saturating, so the widest range (0..=u64::MAX) can't overflow; lo + the rest stays ≤ hi.
+    let span = hi.saturating_sub(lo).saturating_add(1);
+    lo + xxh3_64_with_seed(path.as_bytes(), u64::from(host)) % span
 }

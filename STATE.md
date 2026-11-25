@@ -4,7 +4,7 @@
 
 ## Status
 
-- **2026-11-18:** McCrawl is a high-performance web crawler: Rust crawl engine now, Python ML later. Sub-project 1 (crawl core) is being built on branch `feat/crawl-core`, following `docs/superpowers/plans/2026-11-18-crawl-core.md` (15 tasks). **Done:** Task 1 `urlnorm.rs`, Task 2 `dedup.rs`, Task 3 `robots.rs`, Tasks 4–5 `frontier.rs`, Task 6 `parse.rs`, Task 7 `mockweb.rs`, Task 8 `fetch.rs`, Task 9 `store.rs`, Task 10 `metrics.rs`, Task 11 `crawler.rs` (154 tests pass, clippy and fmt clean). Mutations caught: urlnorm 19/19, dedup 12/12, robots 13/14 (the survivor is an unreachable last-resort branch), frontier 12/12, parse 34/34, mockweb 30/30, fetch 48/48, store 43/44 (the survivor is rotating at exactly `rotate_at` vs one byte later, which random record IDs make untestable and which is harmless). Store output also passes `warcio` (Task 13's validator) on files written from real mock-web fetches. metrics 24/24, crawler 77/77 (whole crawls against the mock web and hand-written test sites; 10 of 10 repeat runs pass). **Next: Task 12, the CLI (`main.rs`).**
+- **2026-11-18:** McCrawl is a high-performance web crawler: Rust crawl engine now, Python ML later. Sub-project 1 (crawl core) is being built on branch `feat/crawl-core`, following `docs/superpowers/plans/2026-11-18-crawl-core.md` (15 tasks). **Done:** Task 1 `urlnorm.rs`, Task 2 `dedup.rs`, Task 3 `robots.rs`, Tasks 4–5 `frontier.rs`, Task 6 `parse.rs`, Task 7 `mockweb.rs`, Task 8 `fetch.rs`, Task 9 `store.rs`, Task 10 `metrics.rs`, Task 11 `crawler.rs`, Task 12 the CLI (`main.rs`, `ui.rs`) (175 tests pass, clippy and fmt clean). Mutations caught: urlnorm 19/19, dedup 12/12, robots 13/14 (the survivor is an unreachable last-resort branch), frontier 12/12, parse 34/34, mockweb 30/30, fetch 48/48, store 43/44 (the survivor is rotating at exactly `rotate_at` vs one byte later, which random record IDs make untestable and which is harmless). Store output also passes `warcio` (Task 13's validator) on files written from real mock-web fetches. metrics 24/24, crawler 77/77 (whole crawls against the mock web and hand-written test sites; 10 of 10 repeat runs pass), step 12 146/150 (metrics 11/11, crawler additions 29/29, ui 68/69, main 38/41; the 4 left change nothing visible: a CPU clamp the display also does, and per-run CPU, per-run peak RSS and the live view's final wait, which need a real terminal or separate processes to see). **Next: Task 13, the politeness proof (`tests/politeness.rs`) and `tests/warc_check.py`.**
 - **Remote:** `origin` = `https://github.com/Armaan-king/McCrawl` (`main` and `feat/crawl-core` pushed; GitHub's default branch is still `main`). History may be tidied (squash/reword) before the branch is merged.
 - **Toolchain (WSL):** Rust 1.97.1 from Nix (home-manager; dotfiles are read-only Nix symlinks). Python 3.14, uv.
   - Stale rustup proxies in `~/.cargo/bin` shadow `cargo clippy` / `cargo fmt`. Run `cargo-clippy clippy --all-targets -- -D warnings` and `cargo-fmt` directly instead.
@@ -12,11 +12,24 @@
 
 ## Files
 
-- `Cargo.toml`: crate `mccrawl`, edition 2024. Deps: `url`, `xxhash-rust` (xxh3), `texting_robots`, `lol_html`, `tokio` (rt-multi-thread, macros, net, time, sync, signal, io-util), `axum` (default features off; `tokio` + `http1` only), `reqwest` (default features off; rustls, http2, gzip, brotli, zstd, hickory-dns; aws-lc builds without cmake here), `flate2` (WARC gzip members), `serde` (derive), `serde_json`. No dev-dependencies: tests use `flate2` and `serde_json` from the normal ones. Used by: `cargo`.
+- `Cargo.toml`: crate `mccrawl`, edition 2024. Deps: `url`, `xxhash-rust` (xxh3), `texting_robots`, `lol_html`, `tokio` (rt-multi-thread, macros, net, time, sync, signal, io-util), `axum` (default features off; `tokio` + `http1` only), `reqwest` (default features off; rustls, http2, gzip, brotli, zstd, hickory-dns; aws-lc builds without cmake here), `flate2` (WARC gzip members), `serde` (derive), `serde_json`, `clap` (derive: the CLI, and `ui::Theme` as a value enum), `libc` (window size and open-file limit; it was already compiled in through tokio). No dev-dependencies: tests use `flate2` and `serde_json` from the normal ones. Used by: `cargo`.
 - `Cargo.lock`: generated lockfile. Depends on: `Cargo.toml`.
 - `.cargo/config.toml` (gitignored, local only): `target-dir` outside the repo/OneDrive.
-- `src/lib.rs`: `pub mod` declarations (`crawler`, `dedup`, `fetch`, `frontier`, `metrics`, `mockweb`, `parse`, `robots`, `store`, `urlnorm`). Used by: `src/main.rs` (later), `tests/`.
-- `src/main.rs`: binary entry point; still the placeholder "Hello, world!" (CLI comes in Task 12).
+- `src/lib.rs`: `pub mod` declarations (`crawler`, `dedup`, `fetch`, `frontier`, `metrics`, `mockweb`, `parse`, `robots`, `store`, `ui`, `urlnorm`). Used by: `src/main.rs`, `tests/`.
+- `src/main.rs`: the `mccrawl` binary (clap derive). `--help` is styled in Monokai (`ui::help_styles`); `--theme monokai|mocha` is global, Monokai Pro by default.
+  - **`crawl`:** `--seeds` (required; `crawler::parse_seeds`, whose warnings go to stderr; no usable URL is an error), `--contact` (required; `crawler::user_agent`), `--out` (default `~/mccrawl-data/run-<unix secs>`), `--budget` (≥ 1), `--concurrency` (≥ 1), `--per-host-cap` (≥ 1), `--min-delay-ms` (≤ 24 h). The banner goes to stderr, the summary card to stdout. An earlier crawl's output in `--out` is refused with a clear message.
+  - **`mockweb`:** `--hosts` (1 to 1M), `--port` (0 picks a free one), `--latency-ms` as `LOW..HIGH` or one number (≤ 60 s, LOW ≤ HIGH). Prints the address and a `curl --resolve` example, then serves until a stop signal.
+  - **`bench`:** `--hosts`, `--pages` per run, `--mode polite|raw` (polite: 1 s, k = 5, 20–200 ms mock latency; raw: no delays, 0 ms), a `--concurrency` list, `--out` (default `~/mccrawl-data/bench-<secs>`; refused up front if it already holds a `bench.json`).
+    - One in-process mock web; one crawl per concurrency, into `<i>-c<N>/`.
+    - Per-run CPU (a difference) and peak RSS (reset through `/proc/self/clear_refs`).
+    - A line per run on stderr, the Markdown table on stdout, and `bench.json` (settings, ceiling, runs). Ctrl-C ends the current run early and skips the rest.
+  - **Signals:** SIGINT and SIGTERM handlers are registered at start, so there is no moment when the default would kill the process. The first signal sets a `watch` flag that stops crawls gracefully; a second restores the terminal and exits with 130.
+  - **Progress (`run_live`, `show`):** a `watch` channel set as `CrawlConfig::progress`.
+    - In a terminal: `ui::Live` and a `Dashboard`, redrawn 10 times a second (the spinner) with new numbers 4 times a second, or the one-line view when the window is too small.
+    - Otherwise: a plain line every 5 s.
+    - The view task ends when `run` drops the sender, so the panel is erased before the summary prints.
+  - **Also:** raises the soft open-file limit to the hard one (`setrlimit`), so high concurrency doesn't need `ulimit -n`; adds the output directory to I/O errors (`explain`). Exit codes: 0 (done or stopped), 1 (error, with `error: …` on stderr), 2 (usage, from clap), 130 (forced quit).
+  - Depends on: `crawler`, `metrics`, `mockweb`, `ui`, `clap`, `libc`, `serde`, `serde_json`, `tokio`. Tested by: `tests/cli.rs`.
 - `src/urlnorm.rs`: `normalize(base, href) -> Option<Url>`: resolve; drop the fragment, empty query and credentials; strip a trailing host dot; RFC 3986 percent normalization in path and query (decode unreserved, uppercase other hex, leave malformed escapes); http(s) only; ≤ 2048 chars; no path segment repeated > 3 times. Idempotent and `host_key(&Url) -> Option<&str>` (lowercase hostname, the politeness key). Depends on: `url`. Used by: `frontier` (`host_key`), `parse` (`normalize`), `crawler` (both). Tested by: `tests/urlnorm.rs`.
 - `src/dedup.rs`: `url_hash`/`body_hash` (xxh3_64), `hamming`, `simhash` (64-bit SimHash over lowercase word 3-shingles; empty → 0), `SeenSet` (HashSet<u64> of URL hashes; `insert` → true if new), `NearDupIndex` (Manku 4×16-bit block tables; `find`/`insert`), `NEAR_DUP_BITS = 3`. Depends on: `url`, `xxhash-rust`. Used by: `frontier` (SeenSet), `store` (NearDupIndex), `crawler` (simhash, body_hash). Tested by: `tests/dedup.rs`.
 - `src/robots.rs`: `RobotsRules { AllowAll, Parsed(Robot), Unreachable }`. `from_response(status, body, agent)` follows RFC 9309: 2xx parse, 4xx AllowAll, 429/5xx/other Unreachable. If texting_robots rejects the whole file (one `$` rule over its 42 KB pattern limit), it retries via `strip_end_anchors`: `$` removed from Disallow lines and `$` Allow lines dropped, so never less strict. AllowAll is only the last resort, which no test input could reach. `allowed(&Url)` (Unreachable → false). `crawl_delay()` never panics and is capped at `MAX_CRAWL_DELAY` = 24 h. `robots_url(&Url)`. Depends on: `texting_robots`, `url`. Used by: `frontier`, `crawler`. Tested by: `tests/robots.rs`.
@@ -25,10 +38,10 @@
 - `src/mockweb.rs`: a deterministic synthetic web for tests and benchmarks. One axum server on `127.0.0.1` serves every `h{i}.mock` host, chosen by the `Host` header (port stripped, lowercased).
   - **Hosts:** `behavior(host % 10)`: 0 DisallowPrivate (robots.txt disallows `/private`, and its pages link there), 1 CrawlDelay2, 2 RobotsDown (503), 3 RateLimited (every 3rd page request → 429 + `Retry-After: 2`, an atomic per-host counter), 4–9 Normal (robots.txt 404).
   - **Pages:** `page_html(cfg, port, host, page)` is deterministic (SplitMix64 seeded by xxh3 of host and page). It builds `page_words` words from a 4,096-word vocabulary, with `links_per_page` links spread through the text; `cross_host_pct` % of them are absolute cross-host links carrying the port. Every page with `page % 10 == 9` copies the page before it except for the title (a planted near-duplicate).
-  - **Routes:** `/` (= page 0), `/p/{n}`, `/private/{n}`, `/robots.txt`, `/big` (3 MiB), `/redirect` (301 → `/p/0`), `/file.pdf`; anything else, or an unknown host, is 404. Latency is fixed per (host, path) within `latency_ms`.
+  - **Routes:** `/` (= page 0), `/p/{n}`, `/private/{n}`, `/robots.txt`, `/big` (3 MiB), `/redirect` (301 → `/p/0`), `/file.pdf`; anything else, or an unknown host, is 404. Latency is fixed per (host, path) within `latency_ms`; any range works, the widest (0 to u64::MAX) too.
   - **API:** `start(cfg, port)`, `MockWeb { addr }` with `resolve_overrides()`, `seeds(n)` and `hits()`. Every request is logged as a `Hit { host, path, at, status }`, where `at` is the arrival time, before the latency; the log has no cap (`ponytail:`).
   - **Also:** `politeness_ceiling(cfg, min_delay)` = Σ 1/max(min_delay, Crawl-delay) over hosts whose robots.txt is up; `host_name`/`host_index` (exact spelling only); `robots_txt(host)`.
-  - Depends on: `tokio`, `axum`, `xxhash-rust`, `url`. Used by: `tests/fetch.rs`, `tests/crawler.rs`; planned: `tests/politeness.rs`, the `mockweb`/`bench` CLI. Tested by: `tests/mockweb.rs`.
+  - Depends on: `tokio`, `axum`, `xxhash-rust`, `url`. Used by: `tests/fetch.rs`, `tests/crawler.rs`, `src/main.rs` (`mockweb` and `bench`); planned: `tests/politeness.rs`. Tested by: `tests/mockweb.rs`.
 - `src/fetch.rs`: `Fetcher::new(&FetchConfig { user_agent, connect_timeout, timeout (whole request), max_body, resolve })` builds two reqwest clients with the same settings (User-Agent, `Accept`, timeouts, `pool_max_idle_per_host(1)`, DNS overrides). The page client follows no redirects (the crawler queues the target itself); the robots client follows up to 5 (RFC 9309). `Accept` is `text/html,…` for pages and `text/plain,*/*` for robots.txt.
   - `fetch_page(&Url)` reads the body only for HTML (`text/html` or `application/xhtml+xml`, case-insensitive, parameters ignored; a missing type is not HTML). `fetch_robots(&Url)` reads any type.
   - **Bodies:** decoded (gzip/br/zstd), capped at `max_body` bytes after decoding (decompression bombs stop at the cap). The fetch returns as soon as the cap is reached, without waiting for the rest; the buffer reservation is capped too, so a hostile `Content-Length` can't allocate.
@@ -62,15 +75,16 @@
   - **`Tally`:**
     - Fields: pages (responses, any status), bytes, `status` histogram, `errors` by `FetchError::kind`, retries, redirects, non_html, robots_fetches, `latencies_ms` (one per response), `idle_slot` (time with a free slot but no host allowed: the cost of politeness).
     - `page(status, bytes, elapsed)` counts one response; latency is whole milliseconds, saturating at u32::MAX.
-    - `report(wall, FrontierStats, StoreSummary) -> Report` sorts the latencies and samples CPU and peak RSS. `progress_line(wall, &FrontierStats)` gives one stderr line.
+    - `report(wall, FrontierStats, StoreSummary) -> Report` sorts the latencies and samples CPU and peak RSS. `progress(elapsed, in_flight, FrontierStats, stopping) -> Progress` snapshots the tally for the live display, with latency percentiles over the last `RECENT` (1,024) responses.
+  - **`Progress`:** elapsed, pages, errors, bytes, status, retries, in_flight, recent p50/p99, the frontier stats, `stopping` (the shutdown fired) and `saving` (the last snapshot: fetching is over, the output is being written).
   - **`Report`** (Serialize, becomes `report.json`): wall_secs, pages, pages_per_sec (0, not infinity, for zero time, because serde_json writes infinity as null), bytes, status, errors, retries, redirects, non_html, robots_fetches, idle_slot_secs, latency_p50_ms/p99_ms, cpu_secs and peak_rss_mb (`None` off Linux), frontier, store. Config is not included; `crawler` adds it when it writes `report.json`.
   - `percentile(sorted, p)`: nearest rank, ceil(p·n) clamped to 1..=n. The product is shaved by 1e-12, so float error can't move the rank; p outside 0..=1 (or NaN) acts as the nearest end; empty gives 0.
   - **`/proc` readers:** `parse_vmhwm_kb(status)` (the `VmHWM:` line, `kB` required) and `peak_rss_mb()` (MiB). `parse_cpu_secs(stat)` reads fields 14 and 15 after the last `)` (the command name may contain `)`), in ticks of 1/100 s, added as f64 so it can't overflow; `cpu_secs()` reads it live.
   - Known limit (`ponytail:`): latencies kept as a Vec (4 B/page).
-  - Depends on: `frontier` (FrontierStats), `store` (StoreSummary), `serde`. Used by: `crawler`; planned: the `bench` CLI. Tested by: `tests/metrics.rs`.
+  - Depends on: `frontier` (FrontierStats), `store` (StoreSummary), `serde`. Used by: `crawler`, `ui` (Progress, Report), `src/main.rs` (cpu_secs, peak_rss_mb). Tested by: `tests/metrics.rs`.
 - `src/crawler.rs`: `CrawlConfig` and `run(cfg, shutdown) -> Result<Report, BoxError>`: the whole crawl.
-  - **Config:** seeds, out_dir, budget (page fetches started, retries and redirects included), concurrency (fetches in flight, robots.txt included), per_host_cap, min_delay, delay_factor, user_agent, robots_agent, resolve, max_body, robots_retry, progress_every, grace, warc_rotate_at. `new` gives the defaults: 100k pages, 512 slots, 500 per host, 1 s, k = 5, 2 MiB, 60 s, progress every 5 s, 10 s grace, 1 GiB WARC files. Fixed constants: timeouts 10 s connect / 30 s total, 2 retries, 5 redirect hops, 5 host failures, 3 robots attempts, 10 min backoff cap.
-  - **Start-up order:** `validate` first, which refuses concurrency 0, k outside 0..=1000 (NaN too), `min_delay`/`robots_retry`/`grace` over 24 h, and `progress_every` of 0 or over 24 h. Then `Fetcher::new` (a bad User-Agent fails here), then `Store::open` (an earlier crawl's output fails here). So bad input creates nothing and contacts no one.
+  - **Config:** seeds, out_dir, budget (page fetches started, retries and redirects included), concurrency (fetches in flight, robots.txt included), per_host_cap, min_delay, delay_factor, user_agent, robots_agent, resolve, max_body, robots_retry, progress (a `watch::Sender<Progress>`: a snapshot every `PROGRESS_EVERY` = 250 ms, and a last one with `saving` set when fetching ends; `run` drops it on return, which closes the channel), grace, warc_rotate_at. `new` gives the defaults: 100k pages, 512 slots, 500 per host, 1 s, k = 5, 2 MiB, 60 s, no progress channel, 10 s grace, 1 GiB WARC files. Fixed constants: timeouts 10 s connect / 30 s total, 2 retries, 5 redirect hops, 5 host failures, 3 robots attempts, 10 min backoff cap.
+  - **Start-up order:** `validate` first, which refuses concurrency 0, k outside 0..=1000 (NaN too), and `min_delay`/`robots_retry`/`grace` over 24 h. Then `Fetcher::new` (a bad User-Agent fails here), then `Store::open` (an earlier crawl's output fails here). So bad input creates nothing and contacts no one.
   - **Scheduler** (the `run` loop, which owns `Frontier` and `Tally`; no locks): it fills free slots from `frontier.next`, then `select!`s on:
     - a finished fetch (`on_done`);
     - a links message (push the children);
@@ -87,8 +101,35 @@
     - Tally: status, bytes, latency, errors by kind, non_html (2xx that isn't HTML), robots_fetches. `retries` counts retry fetches started; `redirects` counts targets queued.
   - **Parse pool:** one std thread per core, sharing the job queue (as deep as the pool) behind a `Mutex`. `parse_page` parses, computes SimHash and the body hash, sends the row and WARC payload to the store, and returns the children (none for meta nofollow; rel=nofollow links skipped). Each job runs under `catch_unwind` and always sends exactly one links message, so `pending_parse` can't get stuck.
   - **Teardown:** cancel what is still fetching (`JoinSet::shutdown`), drop the links receiver and the shared context, then (in `spawn_blocking`) join the parse threads and the store. A store error is returned as is. Otherwise the report is built and `report.json` (the report plus a `config` object) is written with `create_new`.
+  - **`parse_seeds(text) -> (Vec<Url>, Vec<String>)`:** one URL per line, normalized; blank lines and `#` comments skipped, a comment may follow the URL, a leading BOM is ignored. Any other line gives a warning with its line number (shown cut to 100 characters).
+  - **`user_agent(contact)`:** `McCrawl/0.1 (+contact)` for an http(s) URL or an email address: ASCII, no `(`, `)` or `\`, at most 256 bytes.
   - Known limit: a parse panic loses that page's row (it is caught and logged by the panic hook; untestable without a parser that panics).
-  - Depends on: `urlnorm`, `dedup`, `robots`, `frontier`, `parse`, `fetch`, `store`, `metrics`, `tokio`, `serde_json`, `url`. Used by (planned): `src/main.rs` (Task 12), `tests/politeness.rs`. Tested by: `tests/crawler.rs`.
+  - Depends on: `urlnorm`, `dedup`, `robots`, `frontier`, `parse`, `fetch`, `store`, `metrics`, `tokio`, `serde_json`, `url`. Used by: `src/main.rs`; planned: `tests/politeness.rs`. Tested by: `tests/crawler.rs`.
+- `src/ui.rs`: terminal output. Everything renders to strings, with or without color (a `Paint` is a theme plus on/off), so it is tested without a terminal.
+  - **Color:** `Theme` (`Monokai`, the default, or `Mocha`), as 24-bit codes. `color_wanted(is_terminal, NO_COLOR, TERM)`: only for a terminal, and off for a non-empty `NO_COLOR` (no-color.org) or `TERM=dumb`. `help_styles()` styles clap's help.
+  - **Formats:**
+    - `count`: 12,345, then 1.2M, 3.4B and so on; at most 7 columns for any u64, rounded down.
+    - `bytes`: B up to EiB. `ms`. `clock`: hh:mm:ss, with no limit on the hours.
+    - `width`: columns, not counting color codes.
+  - **`banner`:** the logo, in a left-to-right gradient, beside the name and command, the facts and the place. One plain line without color.
+  - **`Dashboard`:** `new(paint, title, budget, concurrency)`, `update(&Progress, cpu_secs)`, `tick()`, `panel`, `line`, `plain`. The live panel is borderless and at most `WIDTH` = 64 columns, whatever the numbers. Its rows:
+    - a header: spinner, title and clock; or "stopping · finishing N downloads"; or "saving · writing the last pages";
+    - pages against the budget, as a bar with the percent (rounded down);
+    - the rate: a sample every 2 s, the last 24 graphed, and the average so far before the first sample;
+    - data, with recent p50/p99;
+    - a slots bar; hosts (live, dead, queued);
+    - one row per status class (2xx–5xx always, others when seen);
+    - errors, retries and disallowed URLs;
+    - CPU % between samples, peak memory, and the key hint.
+    `line` is the one-line view and `plain` the log line.
+  - **`summary`** (the end card), **`table`** (Markdown with right-aligned cells; reads the same in color), `error` and `warning`.
+  - **`Live`:**
+    - Hides the cursor and turns line wrapping off while it runs, so a narrow window clips the panel instead of breaking the redraw.
+    - Draws each frame with `redraw(prev, lines)`: up `prev` lines, clear, the new lines, all inside synchronized-output marks.
+    - On drop it erases the frame and writes `RESTORE`.
+    - `fits(lines)` checks the window size (TIOCGWINSZ on stderr); when the panel doesn't fit, the one-line view is drawn instead.
+  - Known limit (`ponytail:`): 24-bit color only.
+  - Depends on: `metrics` (Progress, Report), `clap` (styles, ValueEnum), `libc`. Used by: `src/main.rs`. Tested by: `tests/ui.rs`. The terminal-only parts (`Live`, `fits`) were checked in a pseudo-terminal (`script`).
 - `tests/`: one integration-test file per module, against the public API (no test code in `src/`). Run one with `cargo test --test <module>`.
   - `tests/urlnorm.rs`: canonicalization table, trap/scheme rejections, host key (incl. IPs), percent normalization (incl. malformed escapes), host spellings (trailing dot, credentials, IDN, odd IPv4, IPv6, ports), relative forms, idempotence, the length boundary at 2048, trap-rule details.
   - `tests/dedup.rs`: seen-set dedup, SimHash near/far on a 2000-word fixture, block index hit/reject, case/whitespace/short texts, golden values (simhash incl. tie handling, url_hash, body_hash = reference XXH3), hamming, bucket edge cases, and a random check of the block-index guarantee (2,000 fingerprints × 0–6 flipped bits).
@@ -97,7 +138,7 @@
   - `tests/parse.rs`: the plan's fixture (links, anchors, base, canonical, meta, script/style excluded); entity edge cases (numeric rules, Windows-1252, malformed refs kept, Latin-1 table ends); visible text only; title (first, SVG excluded, tags as text); link resolution and href entities; first-base rule; rejected hrefs not leaking anchor text; anchor details (img alt, script inside `<a>`, unclosed `<a>`); `rel` token matching; canonical; meta robots directives; encodings (meta charset, http-equiv, invalid UTF-8, BOM); broken/hostile HTML (truncated, 100k-deep nesting); ambiguous markup (`<select><script>`, `<frameset>`) not stopping the parse; a 50k-link page.
   - `tests/mockweb.rs`:
     - **Pure:** the plan's 3 tests; ceiling math; host-name round trips; each behavior checked through `RobotsRules` (the mock and the crawler agree); mock pages parsed with `parse` (link count, valid targets, port, ~30% cross-host, `/private` links only on DisallowPrivate hosts); the planted near-duplicates (same SimHash, different body hash); config edge cases.
-    - **HTTP**, over raw TCP: every route and its 404s; 429 on every 3rd page per host, interleaved; 300 parallel requests giving exactly 50 × 429; the request log; latency applied but `at` recorded on arrival; resolve overrides, seeds, and an error on a taken port.
+    - **HTTP**, over raw TCP: every route and its 404s; 429 on every 3rd page per host, interleaved; 300 parallel requests giving exactly 50 × 429; the request log; latency applied but `at` recorded on arrival, and the widest range waits instead of overflowing; resolve overrides, seeds, and an error on a taken port.
   - `tests/fetch.rs`:
     - **Against the mock web:** the plan's classification test (200, 301 not followed, PDF body skipped, `/big` cut to 2 MiB, 429 + Retry-After, robots 503/404/200); robots follows `/redirect` while pages don't (checked in the request log); elapsed covers the latency; 40 parallel fetches from one shared `Fetcher`.
     - **Against hand-written servers** (`serve`: one canned reply per connection, request heads captured; `trickle`: parts with gaps, then hold the socket open): request headers (User-Agent, Accept per client, `accept-encoding` with gzip/br/zstd); gzip + chunked undone, with the head rewritten and other headers kept; an encoding not decoded stays in the head; corrupt gzip; a 64 MiB decompression bomb; cap boundaries (exactly at, one over, zero, cut inside a later chunk); a 1 PB Content-Length; the cap returning without waiting; content-type rules; status 599, raw header bytes, UTF-8 Location, Retry-After forms; robots follows 5 redirects and fails on the 6th; elapsed from send to end of body.
@@ -116,7 +157,7 @@
     - **Percentile:** the plan's cases, the ends, p out of range, NaN and infinity, rank boundaries and duplicates. Every k/100 and k/1000 for 10 sizes is checked against exact integer ranks.
     - **`/proc` parsing:** real-format lines, the peak rather than VmPeak or VmRSS, a `)` inside the command name, huge tick counts, and malformed input → None.
     - **Live readers:** matched against the raw VmHWM; a 64 MiB allocation shows up and the high-water mark never goes down; 300 ms of CPU work shows up.
-    - **Tally and report:** latency saturation; every count carried into the report, with unsorted latencies; the exact JSON key sets (report, frontier, store); zero wall time gives 0/s, not null; the exact progress line.
+    - **Tally and report:** latency saturation; every count carried into the report, with unsorted latencies; the exact JSON key sets (report, frontier, store); zero wall time gives 0/s, not null; the progress snapshot (every count, latencies over the last 1,024 only).
   - `tests/crawler.rs`: whole crawls, each with a 30 s limit so a hang fails instead of blocking.
     - **Helpers:** `serve(route)`, an axum test site that answers for any host name and records each request (host, path, arrival time) and the most requests it served at once; `config` (5 ms delay, k = 0, 50 ms robots retry).
     - **Mock web:** the budget is exact (300 fetches, 300 rows, the WARC holds every 2xx HTML page, `report.json` has the config); a crawl ends by itself (every linked page fetched exactly once, robots.txt first on each host, near duplicates found).
@@ -128,7 +169,29 @@
       - hosts dropped after 5 failures in a row (500s, refused); unreachable robots.txt → nothing fetched;
       - exact status, error and counter totals, and the rows' and WARC's contents.
     - **Limits:** the concurrency is reached but never exceeded, with almost no idle time when slots are the limit; the wait between requests to one host is kept and counted as idle.
+    - **Progress:** a snapshot every 250 ms, counting up, then a last one marked saving with the final counts, then the channel closes; during the grace period they say stopping, with the hung fetch in flight.
+    - **Seeds and contact:** `parse_seeds` (BOM, comments, normalizing, trailing words, line numbers, long lines cut) and `user_agent` (accepted forms, 16 refused ones, the 256-byte limit).
     - **Stopping and failure:** shutdown lets fetches in flight finish, and nothing is sent after `run` returns; the grace period abandons a fetch that never finishes; a store failure stops the crawl with its `io::Error`; bad settings are refused before touching disk or network; an empty crawl; output never overwritten (`pages.jsonl`, `report.json`).
+  - `tests/ui.rs`:
+    - **The panel:** its exact text after 4 snapshots (rates, CPU, every column). Colored output reads exactly like plain once stripped, in both themes, and the status bars use the theme's colors. The percent rounds down, and a long title keeps a space before the clock.
+    - **States:** the stopping and saving headers and hints.
+    - **The rate graph:** the baseline, a sample every 2 s, the last 24 kept, CPU going backwards counted as 0.
+    - **Extreme values:** u64::MAX for everything, a budget and slots of 0, and 10^9 s never take a line past `WIDTH`, and never show NaN or inf; rare status classes get a row.
+    - **The rest:** the plain line; number formats at their boundaries; when color is used; the banner and its gradient (both ends and a blended middle); the summary; the Markdown table; the error and warning labels; the exact redraw sequence.
+  - `tests/cli.rs` (Linux only): the binary itself, with output piped, so in plain mode.
+    - Help and version.
+    - Refused before anything is created: bad arguments (exit 2), and bad input (exit 1): the contact, a missing or empty seeds file, an earlier crawl's output.
+    - A crawl of a local site:
+      - warnings, banner and summary;
+      - the User-Agent on every request;
+      - the flags reaching `report.json`'s config;
+      - the default `--out` under `$HOME`, shown as `~`.
+    - SIGINT after 5.6 s on an endless site: exactly one plain progress line, a graceful stop, the report written. SIGTERM and then SIGINT on a hung fetch: exit 130 at once, the terminal restored, no report.
+    - `mockweb`: it serves; the open-file limit is raised; it stops on Ctrl-C; bad settings and a taken port are refused (with a time limit, so a broken build can't hang the test).
+    - `bench`:
+      - **raw:** 3 runs including a repeated concurrency, the table, `bench.json` and the mode's settings; reusing an `--out` is refused;
+      - **polite:** the 8.5 pages/s ceiling and its share;
+      - **Ctrl-C** during the first run: it stops early and the rest are skipped.
 - `README.md`: project overview with Mermaid diagrams: crawl pipeline, per-host frontier state machine, politeness formula, dedup layers, roadmap, sub-project 1 build order. **After each task:** bump the status line and mark the task's box `:::done`. Mirrors: spec §2 and §4–§6, plan task list.
 - `.gitignore`: ignores `/target`, `/.cargo/`, local envs, secrets, crawl output (`data/`, `output/`) and `*.log`.
 - `CLAUDE.md`: workflow rules for Claude Code (WSL terminal, STATE.md-first workflow).
